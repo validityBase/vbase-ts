@@ -1,15 +1,13 @@
-import { ethers, TransactionReceipt } from "ethers";
+import { ethers, TransactionRequest } from "ethers";
 import { pino } from "pino";
-import { Bytes, Web3 } from "web3";
+import { Web3 } from "web3";
+import { TransactionReceipt } from "web3-types";
 
 import { TransactionSettings } from "./transactionSettings";
 
-export interface BaseTransaction {
-  to: string;
-  data: Bytes;
-  gasLimit: number;
-}
-
+// This is a general function operating on a variety of objects.
+// Disable warning for obj: any.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function serializeBigInts(obj: any): any {
   // If the object is a bigint, return its string representation.
   if (typeof obj === "bigint") {
@@ -23,6 +21,7 @@ function serializeBigInts(obj: any): any {
 
   // If the object is a plain object, recursively process each key-value pair.
   if (typeof obj === "object" && obj !== null) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = {};
     for (const key in obj) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
@@ -36,13 +35,16 @@ function serializeBigInts(obj: any): any {
   return obj;
 }
 
+// This is a general function operating on a variety of objects.
+// Disable warning for obj: any.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function jsonPrettyStringify(obj: any): string {
   return JSON.stringify(obj, null, 2);
 }
 
 async function sendTxAndWaitForHash(
   ethersWallet: ethers.Wallet,
-  tx: BaseTransaction,
+  tx: TransactionRequest,
   logger: pino.Logger,
 ): Promise<string> {
   try {
@@ -68,7 +70,7 @@ export async function escalatedSendTransaction(
   web3: Web3,
   ethersWallet: ethers.Wallet,
   to: string,
-  data: Bytes,
+  data: string,
   logger: pino.Logger,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
@@ -155,9 +157,9 @@ export async function escalatedSendTransaction(
     );
 
     // Check if any of the previously sent transactions has been confirmed.
-    let receipt: TransactionReceipt | null;
+    let receipt: null | TransactionReceipt;
     try {
-      receipt = (await web3.eth.getTransactionReceipt(txHash)) as any;
+      receipt = await web3.eth.getTransactionReceipt(txHash);
       receipt = serializeBigInts(receipt);
     } catch (error) {
       logger.error(

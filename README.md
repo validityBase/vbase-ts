@@ -10,11 +10,12 @@ This project is licensed under the Apache 2.0 License - see the [LICENSE.txt](LI
 
 ## Introduction
 
-vBase creates a global auditable record of when data was created, by whom, and how it has changed (collectively, “data provenance”). Data producers can prove the provenance of their data to any external party, increasing its value and marketability. Data consumers can ensure the integrity of historical data and any derivative calculations. The result is trustworthy information that can be put into production quickly without expensive and time-consuming trials.
+vBase maintains a global auditable record of when data was created, by whom, and how it has changed (collectively, “data provenance”). Data producers can prove the provenance of their data to any external party, increasing its value and marketability. Data consumers can ensure the integrity of historical data and any derivative calculations. The result is trustworthy information that can be put into production quickly without expensive and time-consuming trials.
 
 Verifiable provenance establishes the credibility of data and calculations. For example, if you wish to prove investment skill, the recipient must be sure they are receiving a complete and accurate record of your timestamped trades or portfolios.
 
 vBase resolves several expensive market failures common to financial data. Some of the areas that benefit include:
+
 - Provably point-in-time datasets
 - Auditable investing track records
 - Sound backtests, historical simulations, and time-series modeling
@@ -26,43 +27,46 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
 ## Setup
 
 1. Change to the working directory:
-    ```shell
-    cd ~/validityBase/vbase-ts
-    ```
+
+   ```bash
+   cd ~/validityBase/vbase-ts
+   ```
 
 1. Copy CommitmentService ABIs:
-    ```shell
-    cp ~/validityBase/commitment-service-core/artifacts/contracts/CommitmentService.sol/CommitmentService.json src/common/contracts &&
-    cp ~/validityBase/commitment-service-core/artifacts/contracts/test/CommitmentServiceTest.sol/CommitmentServiceTest.json src/common/contracts
-    ```
+   
+   ```bash
+   cp ~/validityBase/commitment-service-core/artifacts/contracts/CommitmentService.sol/CommitmentService.json src/common/contracts &&
+   cp ~/validityBase/commitment-service-core/artifacts/contracts/test/CommitmentServiceTest.sol/CommitmentServiceTest.json src/common/contracts
+   ```
 
 ## Tests
 
 1. Change to the working directory:
-    ```shell
-    cd ~/validityBase/vbase-ts
-    ```
+
+   ```bash
+   cd ~/validityBase/vbase-ts
+   ```
 
 1. Run localhost tests:
-    ```shell
-    hh test --network localhost
-    ```
+
+   ```bash
+   hh test --network localhost
+   ```
 
 1. Format:
-    ```shell
-    npm run prettier:ts &&
-    npm run prettier:ts src &&
-    npm run prettier:ts test
-    ```
+
+   ```bash
+   npm run prettier:ts .
+   ```
 
 1. Lint:
-    ```shell
-    npm run lint &&
-    npm run lint src &&
-    npm run lint test
-    ```
+   
+   ```bash
+   npm run lint:fix
+   ```
 
 ## Misc
+
 ```shell
 npx hardhat help
 npx hardhat test
