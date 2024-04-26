@@ -5,17 +5,23 @@
   "license": "UNLICENSED",
   "scripts": {
     "test": "hardhat test",
-    "lint": "eslint *.ts",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
     "prettier:ts": "./node_modules/.bin/prettier --write *.ts"
   },
   "dependencies": {
     "pino": "^8.20.0",
+    "pino-pretty": "^11.0.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
     "web3": "^4.7.0"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.2"
+    "@typescript-eslint/eslint-plugin": "^7.7.1",
+    "@typescript-eslint/parser": "^7.7.1",
+    "eslint": "^8.57.0",
+    "hardhat": "^2.22.3",
+    "prettier": "^3.2.5"
   }
 }

@@ -1,13 +1,13 @@
 import { ethers, TransactionReceipt } from "ethers";
-import { pino } from "pino"
-import { Web3 } from "web3";
+import { pino } from "pino";
+import { Bytes, Web3 } from "web3";
 
-import { TransactionSettings } from './transactionSettings';
+import { TransactionSettings } from "./transactionSettings";
 
-interface BaseTransaction {
+export interface BaseTransaction {
   to: string;
-  data: string;
-  gas: number
+  data: Bytes;
+  gasLimit: number;
 }
 
 function serializeBigInts(obj: any): any {
@@ -36,7 +36,7 @@ function serializeBigInts(obj: any): any {
   return obj;
 }
 
-function jsonPrettyStringify(obj: any): string {
+export function jsonPrettyStringify(obj: any): string {
   return JSON.stringify(obj, null, 2);
 }
 
@@ -64,48 +64,53 @@ async function sendTxAndWaitForHash(
   }
 }
 
-async function estimateTxGas(web3: Web3, tx: BaseTransaction, logger: pino.Logger,): Promise<any> {
-  // Estimate gas for the tx.
-  // Auto-gas estimation does not work correctly on some chains.
-  // Polygon set/home/greg/validityBase/vbase-ts/src/common/contracts/vbases it to 550mil by default, even for read-only eth_call, for instance, to avoid DOS.
-  const gas =
-    Number(
-      await web3.eth.estimateGas({
-        to: tx.to,
-        data: tx.data,
-      }),
-    ) + 20e3;
-  tx.gas = gas;
-  return tx;
-}
-
 export async function escalatedSendTransaction(
   web3: Web3,
   ethersWallet: ethers.Wallet,
-  tx: any,
+  to: string,
+  data: Bytes,
   logger: pino.Logger,
 ): Promise<TransactionReceipt> {
-  logger.debug(`escalatedSendTransaction(): tx = ${jsonPrettyStringify(tx)}`);
+  logger.debug("> escalatedSendTransaction()");
 
-  tx = estimateTxGas(web3, tx, logger);
-  logger.debug(
-    `escalatedSendTransaction(): Estimated tx.gas = ${tx.gas}`,
-  );
+  // Auto-gas estimation does not work correctly on some chains.
+  // Polygon sets it to 550mil by default, even for read-only eth_call, for instance, to avoid DOS.
+  const gasLimit =
+    Number(
+      await web3.eth.estimateGas({
+        to: to,
+        data: data,
+      }),
+    ) * TransactionSettings.GAS_FACTOR;
+  logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
   // Calculate an aggressive gas price premium for the initial tx.
   const currentGasPrice = await web3.eth.getGasPrice();
-  // Use fixed point arithmetic to multiply BigInt by a float.
-  tx.gasPrice =
-    (currentGasPrice * BigInt(Math.round(TransactionSettings.GAS_PRICE_INITIAL_FACTOR * 100))) /
-    BigInt(100);
   logger.debug(
-    `escalatedSendTransaction(): Initial tx.gasPrice = ${tx.gasPrice}`,
+    `escalatedSendTransaction(): currentGasPrice = ${currentGasPrice}`,
   );
+
+  // Use fixed point arithmetic to multiply BigInt by a float.
+  const gasPrice =
+    (currentGasPrice *
+      BigInt(Math.round(TransactionSettings.GAS_PRICE_INITIAL_FACTOR * 100))) /
+    BigInt(100);
+  logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
   // Define the nonce we will use for the initial tx and any replacements.
   const nonce = await ethersWallet.getNonce();
-  tx.nonce = nonce;
-  logger.debug(`escalatedSendTransaction(): tx.nonce = ${tx.nonce}`);
+  logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
+
+  const tx = {
+    to: to,
+    data: data,
+    gasLimit: gasLimit,
+    gasPrice: gasPrice,
+    nonce: nonce,
+  };
+  logger.debug(
+    `escalatedSendTransaction(): tx = ${jsonPrettyStringify(serializeBigInts(tx))}`,
+  );
 
   // Send the initial tx.
   // The initial send should not fail.
@@ -130,17 +135,21 @@ export async function escalatedSendTransaction(
 
   // The timeout after which, if the tx has not completed,
   // we will escalate the gas price.
-  let gasPriceEscalationTimeout = TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
+  let gasPriceEscalationTimeout =
+    TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
   // The time after which, if the tx has not completed,
   // we will escalate the gas price.
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
   // The interval for polling for tx completion.
   let txCompletionCheckTimeout = 0;
-  while (numGasPriceEscalations < TransactionSettings.MAX_GAS_PRICE_ESCALATIONS) {
+  while (
+    numGasPriceEscalations < TransactionSettings.MAX_GAS_PRICE_ESCALATIONS
+  ) {
     // Wait for the interval before checking transaction status.
     // Increase the interval between checks to back off on heavy load.
-    txCompletionCheckTimeout += TransactionSettings.TX_COMPLETION_CHECK_INTERVAL;
+    txCompletionCheckTimeout +=
+      TransactionSettings.TX_COMPLETION_CHECK_INTERVAL;
     await new Promise((resolve) =>
       setTimeout(resolve, txCompletionCheckTimeout),
     );
@@ -172,13 +181,16 @@ export async function escalatedSendTransaction(
       // Record escalation and set the next escalation time.
       numGasPriceEscalations++;
       // Increase the interval between escalations to back off on heavy load.
-      gasPriceEscalationTimeout += TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
+      gasPriceEscalationTimeout +=
+        TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
       nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
 
       const currentGasPrice = BigInt(tx.gasPrice);
       tx.gasPrice =
         (currentGasPrice *
-          BigInt(Math.round(TransactionSettings.GAS_PRICE_ESCALATION_FACTOR * 100))) /
+          BigInt(
+            Math.round(TransactionSettings.GAS_PRICE_ESCALATION_FACTOR * 100),
+          )) /
         BigInt(100);
       logger.info(
         `escalatedSendTransaction(): Escalated tx.gasPrice = ${tx.gasPrice}`,
@@ -186,25 +198,25 @@ export async function escalatedSendTransaction(
       // Ensure nonce remains the same for the replacement transaction.
       // This will speed up the previously submitted tx.
       tx.nonce = nonce;
+      logger.debug(
+        `escalatedSendTransaction(): tx = ${jsonPrettyStringify(serializeBigInts(tx))}`,
+      );
 
       // Send the escalated tx.
       try {
         // This tx may fail if a prior one has finished.
         // In that case, we will check the prior tx hash and should process the completion successfully.
-        logger.debug(`escalatedSendTransaction(): > sendTxAndWaitForHash()`);
         txHash = await sendTxAndWaitForHash(ethersWallet, tx, logger);
-        logger.debug(`escalatedSendTransaction(): < sendTxAndWaitForHash()`);
-        logger.debug(
-          `escalatedSendTransaction(): Escalated txHash = ${txHash}`,
-        );
       } catch (error) {
         logger.error(
           `escalatedSendTransaction(): sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
             error,
           )}`,
         );
-        receipt = null;
+        // TODO: Retry instead of throwing.
+        throw error;
       }
+      logger.debug(`escalatedSendTransaction(): Escalated txHash = ${txHash}`);
     }
   }
 
