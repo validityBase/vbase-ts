@@ -113,10 +113,10 @@ describe("CommitmentService", () => {
     // and call a missing contract.
     await network.provider.send("evm_mine");
 
-    // Change the block mining interval to 20 seconds (20000 milliseconds).
+    // Change the block mining interval to 30 seconds (30000 milliseconds).
     // This simulates network contention and a high gas price.
     await network.provider.send("evm_setAutomine", [false]);
-    await network.provider.send("evm_setIntervalMining", [20000]);
+    await network.provider.send("evm_setIntervalMining", [30000]);
 
     // Send the transaction.
     const initialGasPrice = await web3.eth.getGasPrice();
