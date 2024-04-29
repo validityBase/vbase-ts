@@ -1,9 +1,12 @@
 {
   "name": "@validity-base/vbase-ts",
   "version": "0.0.1",
-  "description": "validityBase (vBase) Typescript SDK",
-  "license": "UNLICENSED",
+  "description": "validityBase (vBase) TypeScript SDK",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
+    "build": "tsc",
     "test": "hardhat test",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
@@ -17,6 +20,7 @@
     "web3": "^4.7.0"
   },
   "devDependencies": {
+    "typescript": "^4.0.0",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@typescript-eslint/eslint-plugin": "^7.7.1",
     "@typescript-eslint/parser": "^7.7.1",

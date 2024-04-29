@@ -1,13 +1,21 @@
-node_modules
-coverage
-coverage.json
-typechain
-typechain-types
+# compiled output
+/dist
+/node_modules
 
 # Hardhat files
 cache
 artifacts
 
+# Tests
+/coverage
+/.nyc_output
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
 # Config
-.env
-.vscode
+.env*
