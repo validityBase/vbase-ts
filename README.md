@@ -24,21 +24,6 @@ vBase services do not require access to the data itself, assuring privacy. They 
 
 With vBase, creating and consuming provably correct data is as easy as pressing a button.
 
-## Setup
-
-1. Change to the working directory:
-
-   ```bash
-   cd ~/validityBase/vbase-ts
-   ```
-
-1. Copy CommitmentService ABIs:
-   
-   ```bash
-   cp ~/validityBase/commitment-service-core/artifacts/contracts/CommitmentService.sol/CommitmentService.json src/common/contracts &&
-   cp ~/validityBase/commitment-service-core/artifacts/contracts/test/CommitmentServiceTest.sol/CommitmentServiceTest.json src/common/contracts
-   ```
-
 ## Tests
 
 1. Change to the working directory:
@@ -64,13 +49,3 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
    ```bash
    npm run lint:fix
    ```
-
-## Misc
-
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.ts
-```
