@@ -45,7 +45,6 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
    ```
 
 1. Lint:
-   
    ```bash
    npm run lint:fix
    ```

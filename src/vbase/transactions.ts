@@ -35,19 +35,12 @@ export async function escalatedSendTransaction(
   ethersWallet: ethers.Wallet,
   to: string,
   data: string,
+  gasLimit: number,
   logger: pino.Logger,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
 
-  // Auto-gas estimation does not work correctly on some chains.
-  // Polygon sets it to 550mil by default, even for read-only eth_call, for instance, to avoid DOS.
-  const gasLimit =
-    Number(
-      await web3.eth.estimateGas({
-        to: to,
-        data: data,
-      }),
-    ) * TransactionSettings.GAS_FACTOR;
+  gasLimit = TransactionSettings.GAS_FACTOR * gasLimit;
   logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
   // Calculate an aggressive gas price premium for the initial tx.
