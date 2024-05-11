@@ -35,12 +35,21 @@ export async function escalatedSendTransaction(
   ethersWallet: ethers.Wallet,
   to: string,
   data: string,
-  gasLimit: number,
   logger: pino.Logger,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
 
-  gasLimit = TransactionSettings.GAS_FACTOR * gasLimit;
+  // Estimate gas using a profiled model for gas use.
+  // CommitmentService.gas.ts estimates the following gas use
+  // as a function of data.length.
+  // gas = 150,000 + 400 * max(0, data.length - 778)
+  // The reason for this structure is as follows:
+  // The fixed cost of a commitment for a setObject with ~778 char len data is ~100K gas.
+  // The slope of gas cost function is ~366gas/char of data.length.
+  // This code is sensitive and should be modified only after careful testing and profiling of gas use.
+  const gasLimit =
+    (150000 + 400 * Math.max(0, data.length - 778)) *
+    TransactionSettings.GAS_FACTOR;
   logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
   // Calculate an aggressive gas price premium for the initial tx.

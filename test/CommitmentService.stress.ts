@@ -99,12 +99,6 @@ describe("CommitmentService", () => {
       ethersWallet,
       commitmentServiceAddress,
       data,
-      Number(
-        await web3.eth.estimateGas({
-          to: commitmentServiceAddress,
-          data: data,
-        }),
-      ),
       logger,
     );
     expect(
@@ -132,12 +126,6 @@ describe("CommitmentService", () => {
       ethersWallet,
       commitmentServiceAddress,
       data,
-      Number(
-        await web3.eth.estimateGas({
-          to: commitmentServiceAddress,
-          data: data,
-        }),
-      ),
       logger,
     );
 
