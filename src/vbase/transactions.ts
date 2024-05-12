@@ -1,4 +1,4 @@
-import { ethers, TransactionRequest } from "ethers";
+import { Signer, TransactionRequest } from "ethers";
 import { pino } from "pino";
 import { Web3 } from "web3";
 import { TransactionReceipt } from "web3-types";
@@ -7,7 +7,7 @@ import { TransactionSettings } from "./transactionSettings";
 import { serializeBigInts, jsonPrettyStringify } from "./utils";
 
 async function sendTxAndWaitForHash(
-  ethersWallet: ethers.Wallet,
+  signer: Signer,
   tx: TransactionRequest,
   logger: pino.Logger,
 ): Promise<string> {
@@ -17,7 +17,7 @@ async function sendTxAndWaitForHash(
         serializeBigInts(tx),
       )}`,
     );
-    const txResponse = await ethersWallet.sendTransaction(tx);
+    const txResponse = await signer.sendTransaction(tx);
     logger.info(
       `sendTxAndWaitForHash(): txResponse = ${jsonPrettyStringify(txResponse)}`,
     );
@@ -32,7 +32,7 @@ async function sendTxAndWaitForHash(
 
 export async function escalatedSendTransaction(
   web3: Web3,
-  ethersWallet: ethers.Wallet,
+  signer: Signer,
   to: string,
   data: string,
   logger: pino.Logger,
@@ -66,7 +66,7 @@ export async function escalatedSendTransaction(
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
   // Define the nonce we will use for the initial tx and any replacements.
-  const nonce = await ethersWallet.getNonce();
+  const nonce = await signer.getNonce();
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
   const tx = {
@@ -86,7 +86,7 @@ export async function escalatedSendTransaction(
   // TODO: Add retries.
   let txHash: string;
   try {
-    txHash = await sendTxAndWaitForHash(ethersWallet, tx, logger);
+    txHash = await sendTxAndWaitForHash(signer, tx, logger);
   } catch (error) {
     logger.error(
       `escalatedSendTransaction(): sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
@@ -174,7 +174,7 @@ export async function escalatedSendTransaction(
       try {
         // This tx may fail if a prior one has finished.
         // In that case, we will check the prior tx hash and should process the completion successfully.
-        txHash = await sendTxAndWaitForHash(ethersWallet, tx, logger);
+        txHash = await sendTxAndWaitForHash(signer, tx, logger);
       } catch (error) {
         logger.error(
           `escalatedSendTransaction(): sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
