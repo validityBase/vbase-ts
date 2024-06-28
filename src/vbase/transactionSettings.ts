@@ -1,7 +1,8 @@
 // Tx escalation settings.
 export class TransactionSettings {
   // Gas limit factor. The multiple of the estimated gas limit for the transaction.
-  static GAS_FACTOR = 2;
+  // Set a high limit to support L2s that must account for L1 gas charges.
+  static GAS_FACTOR = 8;
   // Pay an aggressive gas price premium to ensure prompt execution.
   static GAS_PRICE_INITIAL_FACTOR = 1.5;
   // Gas price escalation factor.
