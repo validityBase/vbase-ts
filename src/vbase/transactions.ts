@@ -6,28 +6,79 @@ import { TransactionReceipt } from "web3-types";
 import { TransactionSettings } from "./transactionSettings";
 import { serializeBigInts, jsonPrettyStringify } from "./utils";
 
+const N_SEND_TX_RETRIES = 5;
+
 async function sendTxAndWaitForHash(
   signer: Signer,
   tx: TransactionRequest,
   logger: pino.Logger,
 ): Promise<string> {
-  try {
-    logger.info(
-      `sendTxAndWaitForHash(): tx = ${jsonPrettyStringify(
-        serializeBigInts(tx),
-      )}`,
-    );
-    const txResponse = await signer.sendTransaction(tx);
-    logger.info(
-      `sendTxAndWaitForHash(): txResponse = ${jsonPrettyStringify(txResponse)}`,
-    );
-    return txResponse.hash;
-  } catch (error) {
-    logger.error(
-      `sendTxAndWaitForHash(): error = ${jsonPrettyStringify(error)}`,
-    );
-    throw error;
+  let attempt = 0;
+  const currentTx = { ...tx };
+
+  // The caller should always set the gasLimit and nonce.
+  // using the heuristic in escalatedSendTransaction().
+  if (!currentTx.gasLimit || currentTx.gasLimit === undefined || currentTx.gasLimit === null) {
+    throw new Error("sendTxAndWaitForHash(): gasLimit undefined");
   }
+  if (currentTx.nonce === undefined || currentTx.nonce === null) {
+    throw new Error("sendTxAndWaitForHash(): nonce undefined");
+  }
+
+  // Retry on errors.
+  while (attempt < N_SEND_TX_RETRIES) {
+    try {
+      logger.info(
+        `sendTxAndWaitForHash(): currentTx = ${jsonPrettyStringify(
+          serializeBigInts(currentTx),
+        )}`,
+      );
+      const txResponse = await signer.sendTransaction(currentTx);
+      logger.info(
+        `sendTxAndWaitForHash(): txResponse = ${jsonPrettyStringify(txResponse)}`,
+      );
+      return txResponse.hash;
+    } catch (error: any) {      
+      logger.error(
+        `sendTxAndWaitForHash(): error = ${jsonPrettyStringify(error)}`,
+      );
+      if (typeof error.message === "string" && error.message.includes("gas")) {
+        // If the error complains about gas, double the gasLimit and retry.
+        // This will handle "intrinsic gas too low" errors from L2 sequencers
+        // and related errors we get when testing low gas limits on other networks.
+        // We also have to advance the nonce.
+        currentTx.gasLimit = (currentTx.gasLimit as number) * 2;
+        currentTx.nonce += 1
+        attempt++;
+        logger.info(
+          "sendTxAndWaitForHashWithRetry(): Retrying with doubled gasLimit",
+        );
+        continue;
+      }
+      if (typeof error.message === "string" && error.message.includes("nonce")) {
+        // If the error complains about nonce, attempt to update nonce.
+        // This will handle cases where a prior tx has failed
+        // and the client is confused about the nonce.
+        // One would expect signer.getNonce() to return the correct nonce,
+        // but it does not.
+        // TODO: Long-term nonce management should be done via a single
+        // globally synchronized counter 
+        // with a check on failure since the following operation is expensive.
+        if (signer.provider !== null) {
+          currentTx.nonce = await signer.provider.getTransactionCount(signer.getAddress());
+        }
+        attempt++;
+        logger.info(
+          `sendTxAndWaitForHashWithRetry(): Retrying with nonce = ${currentTx.nonce}`,
+        );
+        continue;
+      }
+
+    }
+  }
+  throw new Error(
+    `sendTxAndWaitForHash(): Failed to send transaction after ${attempt} retries`,
+  );
 }
 
 export async function escalatedSendTransaction(
@@ -36,6 +87,7 @@ export async function escalatedSendTransaction(
   to: string,
   data: string,
   logger: pino.Logger,
+  gasLimit?: number,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
 
@@ -47,9 +99,11 @@ export async function escalatedSendTransaction(
   // The fixed cost of a commitment for a setObject with ~778 char len data is ~100K gas.
   // The slope of gas cost function is ~366gas/char of data.length.
   // This code is sensitive and should be modified only after careful testing and profiling of gas use.
-  const gasLimit =
-    (150000 + 400 * Math.max(0, data.length - 778)) *
-    TransactionSettings.GAS_FACTOR;
+  if (gasLimit === undefined) {
+    gasLimit =
+      (150000 + 400 * Math.max(0, data.length - 778)) *
+      TransactionSettings.GAS_FACTOR;
+  }
   logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
   // Calculate an aggressive gas price premium for the initial tx.
@@ -83,17 +137,15 @@ export async function escalatedSendTransaction(
   // Send the initial tx.
   // The initial send should not fail.
   // If we encounter its failures in normal operation, we should add retries.
-  // TODO: Add retries.
   let txHash: string;
   try {
     txHash = await sendTxAndWaitForHash(signer, tx, logger);
   } catch (error) {
     logger.error(
-      `escalatedSendTransaction(): sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
+      `escalatedSendTransaction(): Initial sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
         error,
       )}`,
     );
-    // TODO: Retry instead of throwing.
     throw error;
   }
   logger.debug(`escalatedSendTransaction(): Initial txHash = ${txHash}`);
@@ -177,7 +229,7 @@ export async function escalatedSendTransaction(
         txHash = await sendTxAndWaitForHash(signer, tx, logger);
       } catch (error) {
         logger.error(
-          `escalatedSendTransaction(): sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
+          `escalatedSendTransaction(): Escalated sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
             error,
           )}`,
         );

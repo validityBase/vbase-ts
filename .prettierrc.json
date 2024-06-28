@@ -1,5 +1,5 @@
 {
-  "endOfLine": "crlf",
+  "endOfLine": "auto",
   "singleQuote": false,
   "trailingComma": "all"
 }

@@ -12,9 +12,10 @@
     "build": "tsc -p tsconfig.json",
     "postinstall": "npm run build",
     "test": "hardhat test",
-    "lint": "eslint . --ext .ts",
-    "lint:fix": "eslint . --ext .ts --fix",
-    "prettier:ts": "./node_modules/.bin/prettier --write *.ts"
+    "format:check": "prettier --check '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
+    "format:write": "prettier --write '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
+    "lint:check": "eslint '**/*.{js,jsx,ts,tsx}'",
+    "lint:write": "eslint '**/*.{js,jsx,ts,tsx}' --fix"
   },
   "dependencies": {
     "ethers": "^6.12.1",

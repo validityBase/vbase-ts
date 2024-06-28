@@ -145,4 +145,50 @@ describe("CommitmentService", () => {
     await network.provider.send("evm_setIntervalMining", [0]);
     await network.provider.send("evm_setAutomine", [true]);
   });
+
+  it("Succeeds addSetObject", async () => {
+    await expect(await commitmentService.addSet(TEST_HASH1))
+      .to.emit(commitmentService, "AddSet")
+      .withArgs(owner, TEST_HASH1);
+    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
+    await expect(escalatedSendTransaction(
+      web3,
+      ethersWallet,
+      commitmentServiceAddress,
+      data,
+      logger,
+      300000,
+    )).to.be.fulfilled;
+  });
+
+  it("Fails via escalatedSendTransaction with low gas", async () => {
+    await expect(await commitmentService.addSet(TEST_HASH1))
+      .to.emit(commitmentService, "AddSet")
+      .withArgs(owner, TEST_HASH1);
+    // Fail due to tiny gas limit.
+    // We need a large tx that requires enough gas to fail after the retries.
+    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
+    await expect(escalatedSendTransaction(
+      web3,
+      ethersWallet,
+      commitmentServiceAddress,
+      data,
+      logger,
+      21204, // Transaction requires at least 21204 gas.
+    )).to.be.rejectedWith(Error, /Failed to send transaction after/);
+  });
+
+  it("Succeeds via escalatedSendTransaction after gas escalation", async () => {
+    // Fail due to tiny gas limit.
+    // We need a large tx that requires enough gas to fail after the retries.
+    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
+    await expect(escalatedSendTransaction(
+      web3,
+      ethersWallet,
+      commitmentServiceAddress,
+      data,
+      logger,
+      40000,
+    )).to.be.fulfilled;
+  });
 });
