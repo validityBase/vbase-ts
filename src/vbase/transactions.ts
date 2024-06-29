@@ -4,7 +4,7 @@ import { Web3 } from "web3";
 import { TransactionReceipt } from "web3-types";
 
 import { TransactionSettings } from "./transactionSettings";
-import { serializeBigInts, jsonPrettyStringify } from "./utils";
+import { serializeBigInts } from "./utils";
 
 const N_SEND_TX_RETRIES = 5;
 
@@ -18,7 +18,7 @@ async function sendTxAndWaitForHash(
 
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
-  if (!currentTx.gasLimit || currentTx.gasLimit === undefined || currentTx.gasLimit === null) {
+  if (!currentTx.gasLimit) {
     throw new Error("sendTxAndWaitForHash(): gasLimit undefined");
   }
   if (currentTx.nonce === undefined || currentTx.nonce === null) {
@@ -29,43 +29,43 @@ async function sendTxAndWaitForHash(
   while (attempt < N_SEND_TX_RETRIES) {
     try {
       logger.info(
-        `sendTxAndWaitForHash(): currentTx = ${jsonPrettyStringify(
-          serializeBigInts(currentTx),
-        )}`,
+        `sendTxAndWaitForHash(): currentTx = ${JSON.stringify(serializeBigInts(currentTx))}`,
       );
       const txResponse = await signer.sendTransaction(currentTx);
       logger.info(
-        `sendTxAndWaitForHash(): txResponse = ${jsonPrettyStringify(txResponse)}`,
+        `sendTxAndWaitForHash(): txResponse = ${JSON.stringify(txResponse)}`,
       );
       return txResponse.hash;
-    } catch (error: any) {      
-      logger.error(
-        `sendTxAndWaitForHash(): error = ${jsonPrettyStringify(error)}`,
-      );
+    } catch (error: any) {
+      logger.error(`sendTxAndWaitForHash(): error = ${error}`);
       if (typeof error.message === "string" && error.message.includes("gas")) {
         // If the error complains about gas, double the gasLimit and retry.
         // This will handle "intrinsic gas too low" errors from L2 sequencers
         // and related errors we get when testing low gas limits on other networks.
         // We also have to advance the nonce.
         currentTx.gasLimit = (currentTx.gasLimit as number) * 2;
-        currentTx.nonce += 1
         attempt++;
         logger.info(
           "sendTxAndWaitForHashWithRetry(): Retrying with doubled gasLimit",
         );
         continue;
       }
-      if (typeof error.message === "string" && error.message.includes("nonce")) {
+      if (
+        typeof error.message === "string" &&
+        error.message.includes("nonce")
+      ) {
         // If the error complains about nonce, attempt to update nonce.
         // This will handle cases where a prior tx has failed
         // and the client is confused about the nonce.
         // One would expect signer.getNonce() to return the correct nonce,
         // but it does not.
         // TODO: Long-term nonce management should be done via a single
-        // globally synchronized counter 
+        // globally synchronized counter
         // with a check on failure since the following operation is expensive.
         if (signer.provider !== null) {
-          currentTx.nonce = await signer.provider.getTransactionCount(signer.getAddress());
+          currentTx.nonce = await signer.provider.getTransactionCount(
+            signer.getAddress(),
+          );
         }
         attempt++;
         logger.info(
@@ -73,7 +73,6 @@ async function sendTxAndWaitForHash(
         );
         continue;
       }
-
     }
   }
   throw new Error(
@@ -120,7 +119,10 @@ export async function escalatedSendTransaction(
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
   // Define the nonce we will use for the initial tx and any replacements.
-  const nonce = await signer.getNonce();
+  if (!signer.provider) {
+    throw new Error("escalatedSendTransaction(): signer.provider undefined");
+  }
+  const nonce = await signer.provider.getTransactionCount(signer.getAddress());
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
   const tx = {
@@ -131,7 +133,7 @@ export async function escalatedSendTransaction(
     nonce: nonce,
   };
   logger.debug(
-    `escalatedSendTransaction(): tx = ${jsonPrettyStringify(serializeBigInts(tx))}`,
+    `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
   );
 
   // Send the initial tx.
@@ -142,9 +144,7 @@ export async function escalatedSendTransaction(
     txHash = await sendTxAndWaitForHash(signer, tx, logger);
   } catch (error) {
     logger.error(
-      `escalatedSendTransaction(): Initial sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
-        error,
-      )}`,
+      `escalatedSendTransaction(): Initial sendTxAndWaitForHash(): error = ${error}`,
     );
     throw error;
   }
@@ -181,7 +181,7 @@ export async function escalatedSendTransaction(
       receipt = serializeBigInts(receipt);
     } catch (error) {
       logger.error(
-        `escalatedSendTransaction(): getTransactionReceipt(): error = ${jsonPrettyStringify(
+        `escalatedSendTransaction(): getTransactionReceipt(): error = ${JSON.stringify(
           error,
         )}`,
       );
@@ -218,9 +218,7 @@ export async function escalatedSendTransaction(
       // Ensure nonce remains the same for the replacement transaction.
       // This will speed up the previously submitted tx.
       tx.nonce = nonce;
-      logger.debug(
-        `escalatedSendTransaction(): tx = ${jsonPrettyStringify(serializeBigInts(tx))}`,
-      );
+      logger.debug(`escalatedSendTransaction(): tx = ${serializeBigInts(tx)}`);
 
       // Send the escalated tx.
       try {
@@ -229,11 +227,8 @@ export async function escalatedSendTransaction(
         txHash = await sendTxAndWaitForHash(signer, tx, logger);
       } catch (error) {
         logger.error(
-          `escalatedSendTransaction(): Escalated sendTxAndWaitForHash(): error = ${jsonPrettyStringify(
-            error,
-          )}`,
+          `escalatedSendTransaction(): Escalated sendTxAndWaitForHash(): error = ${error}`,
         );
-        // TODO: Retry instead of throwing.
         throw error;
       }
       logger.debug(`escalatedSendTransaction(): Escalated txHash = ${txHash}`);

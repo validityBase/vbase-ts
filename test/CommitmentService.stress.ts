@@ -51,6 +51,20 @@ describe("CommitmentService", () => {
   let ethersWallet: ethers.Wallet;
   let commitmentServiceAddress: string;
 
+  async function escalatedSendTransactionWorker(
+    data: string,
+    gasLimit?: number,
+  ) {
+    return await escalatedSendTransaction(
+      web3,
+      ethersWallet,
+      commitmentServiceAddress,
+      data,
+      logger,
+      gasLimit,
+    );
+  }
+
   beforeEach(async function () {
     [owner, sender] = await ethers.getSigners();
     const Contract = await ethers.getContractFactory(
@@ -94,13 +108,7 @@ describe("CommitmentService", () => {
 
   it("Executes addSet via escalatedSendTransaction", async () => {
     const data = encodeFunctionCall(web3, "addSet", [TEST_HASH2]).toString();
-    await escalatedSendTransaction(
-      web3,
-      ethersWallet,
-      commitmentServiceAddress,
-      data,
-      logger,
-    );
+    await escalatedSendTransactionWorker(data);
     expect(
       await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH2),
     ).to.equal(true);
@@ -121,13 +129,7 @@ describe("CommitmentService", () => {
     // Send the transaction.
     const initialGasPrice = await web3.eth.getGasPrice();
     const data = encodeFunctionCall(web3, "addSet", [TEST_HASH2]).toString();
-    const receipt = await escalatedSendTransaction(
-      web3,
-      ethersWallet,
-      commitmentServiceAddress,
-      data,
-      logger,
-    );
+    const receipt = await escalatedSendTransactionWorker(data);
 
     // Verify that the transaction has completed at a higher gas price.
     const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
@@ -146,49 +148,60 @@ describe("CommitmentService", () => {
     await network.provider.send("evm_setAutomine", [true]);
   });
 
-  it("Succeeds addSetObject", async () => {
-    await expect(await commitmentService.addSet(TEST_HASH1))
-      .to.emit(commitmentService, "AddSet")
-      .withArgs(owner, TEST_HASH1);
-    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
-    await expect(escalatedSendTransaction(
-      web3,
-      ethersWallet,
-      commitmentServiceAddress,
-      data,
-      logger,
-      300000,
-    )).to.be.fulfilled;
+  it("Executes addSet and addSetObject", async () => {
+    // All txs have to be submitted via encodeFunctionCall()
+    // to have the provider track nonces properly.
+    let data = encodeFunctionCall(web3, "addSet", [TEST_HASH1]).toString();
+    await escalatedSendTransactionWorker(data, 300000);
+    expect(
+      await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH1),
+    ).to.equal(true);
+    data = encodeFunctionCall(web3, "addSetObject", [
+      TEST_HASH1,
+      TEST_HASH2,
+    ]).toString();
+    await expect(escalatedSendTransactionWorker(data, 300000)).to.be.fulfilled;
   });
 
   it("Fails via escalatedSendTransaction with low gas", async () => {
-    await expect(await commitmentService.addSet(TEST_HASH1))
-      .to.emit(commitmentService, "AddSet")
-      .withArgs(owner, TEST_HASH1);
-    // Fail due to tiny gas limit.
-    // We need a large tx that requires enough gas to fail after the retries.
-    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
-    await expect(escalatedSendTransaction(
-      web3,
-      ethersWallet,
-      commitmentServiceAddress,
-      data,
-      logger,
-      21204, // Transaction requires at least 21204 gas.
-    )).to.be.rejectedWith(Error, /Failed to send transaction after/);
+    let data = encodeFunctionCall(web3, "addSet", [TEST_HASH1]).toString();
+    await escalatedSendTransactionWorker(data, 300000);
+    expect(
+      await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH1),
+    ).to.equal(true);
+    // Fail due to low gas limit.
+    data = encodeFunctionCall(web3, "addSetObject", [
+      TEST_HASH1,
+      TEST_HASH2,
+    ]).toString();
+    await expect(escalatedSendTransactionWorker(data, 1000)).to.be.rejectedWith(
+      Error,
+      /Failed to send transaction after/,
+    );
   });
 
   it("Succeeds via escalatedSendTransaction after gas escalation", async () => {
-    // Fail due to tiny gas limit.
-    // We need a large tx that requires enough gas to fail after the retries.
-    const data = encodeFunctionCall(web3, "addSetObject", [TEST_HASH1, TEST_HASH2]).toString();
-    await expect(escalatedSendTransaction(
-      web3,
-      ethersWallet,
-      commitmentServiceAddress,
+    let data = encodeFunctionCall(web3, "addSet", [TEST_HASH1]).toString();
+    await escalatedSendTransactionWorker(data, 300000);
+    expect(
+      await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH1),
+    ).to.equal(true);
+    // This needs to be a large transaction so that the gas limit is exceeded.
+    // Succeed eventually after doubling the gas limit.
+    data = encodeFunctionCall(web3, "addSetObject", [
+      TEST_HASH1,
+      TEST_HASH2,
+    ]).toString();
+    const receipt = await escalatedSendTransactionWorker(
       data,
-      logger,
-      40000,
-    )).to.be.fulfilled;
+      22000, // Transaction requires at least 21344 gas to be submitted.
+    );
+    // Verify that the transaction has completed at a higher gas limit
+    // following doublings.
+    // gasUsed is number represented as a string with a trailing "n".
+    const gasUsed = Number(String(receipt.gasUsed).slice(0, -1));
+    expect(gasUsed).to.be.finite;
+    expect(gasUsed).to.be.greaterThan(44000);
+    expect(gasUsed).to.be.lessThan(88000);
   });
 });
