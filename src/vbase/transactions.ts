@@ -1,4 +1,4 @@
-import { Signer, TransactionRequest } from "ethers";
+import { NonceManager, Signer, TransactionRequest } from "ethers";
 import { pino } from "pino";
 import { Web3 } from "web3";
 import { TransactionReceipt } from "web3-types";
@@ -15,6 +15,13 @@ async function sendTxAndWaitForHash(
 ): Promise<string> {
   let attempt = 0;
   const currentTx = { ...tx };
+
+  // Ensure signer is not an instance of NonceManager.
+  // NonceManager overrides nonce based on its own logic
+  // and breaks nonce reset and transaction retry with higher gas limit.
+  if (signer instanceof NonceManager) {
+    throw new Error("sendTxAndWaitForHash(): signer is a NonceManager");
+  }
 
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
