@@ -34,17 +34,26 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
 
 1. Run localhost tests:
 
-   ```bash
-   hh test --network localhost
-   ```
+   1. Run all tests:
+
+      ```bash
+      npm run test
+      ```
+
+   1. Run a specific named test:
+
+      ```beash
+      npm run test -- --grep "Executes addSet$"
+      ```
 
 1. Format:
 
    ```bash
-   npm run prettier:ts .
+   npm run format:write
    ```
 
 1. Lint:
+
    ```bash
-   npm run lint:fix
+   npm run lint:write
    ```

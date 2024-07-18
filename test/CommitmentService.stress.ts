@@ -6,6 +6,7 @@ import { Bytes, Web3 } from "web3";
 
 import artifact, { abi } from "../src/common/contracts/CommitmentService.json";
 import { escalatedSendTransaction } from "../src/vbase/transactions";
+import txSettings from "../src/vbase/txSettings";
 
 const TEST_HASH1 = zeroPadBytes("0x01", 32);
 const TEST_HASH2 = zeroPadBytes("0xff", 32);
@@ -75,6 +76,8 @@ describe("CommitmentService", () => {
     web3 = new Web3(hre.network.provider);
     ethersWallet = new ethers.Wallet(SIGNER_PRIVATE_KEY, ethers.provider);
     commitmentServiceAddress = await commitmentService.getAddress();
+    // Set short gasPriceEscalationInterval for testing.
+    txSettings.gasPriceEscalationInterval = 2000;
   });
 
   describe("UserSet", () => {
@@ -121,22 +124,26 @@ describe("CommitmentService", () => {
     // and call a missing contract.
     await network.provider.send("evm_mine");
 
-    // Change the block mining interval to 30 seconds (30000 milliseconds).
+    // Change the block mining interval to a long window to simulate low gas price.
+    const BLOCK_TIME = 10000;
     // This simulates network contention and a high gas price.
     await network.provider.send("evm_setAutomine", [false]);
-    await network.provider.send("evm_setIntervalMining", [30000]);
+    await network.provider.send("evm_setIntervalMining", [BLOCK_TIME]);
 
     // Send the transaction.
-    const initialGasPrice = await web3.eth.getGasPrice();
+    const initialGasPrice =
+      Number(await web3.eth.getGasPrice()) * txSettings.gasPriceInitialFactor;
     const data = encodeFunctionCall(web3, "addSet", [TEST_HASH2]).toString();
     const receipt = await escalatedSendTransactionWorker(data);
 
     // Verify that the transaction has completed at a higher gas price.
+    // We can't perform strict accounting since the timeouts,
+    // block times, and gas escalation intervals are approximate.
     const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
     // receipt.effectiveGasPrice.slice(0, -1) removes the last "n" character.
     expect(
-      Number(effectiveGasPrice.slice(0, -1)) / Number(initialGasPrice),
-    ).to.be.greaterThan(2);
+      Number(effectiveGasPrice.slice(0, -1)) / initialGasPrice,
+    ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
 
     // Check the user sets.
     expect(

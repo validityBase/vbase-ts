@@ -3,10 +3,8 @@ import { pino } from "pino";
 import { Web3 } from "web3";
 import { TransactionReceipt } from "web3-types";
 
-import { TransactionSettings } from "./transactionSettings";
+import txSettings from "./txSettings";
 import { serializeBigInts } from "./utils";
-
-const N_SEND_TX_RETRIES = 5;
 
 async function sendTxAndWaitForHash(
   signer: Signer,
@@ -33,7 +31,7 @@ async function sendTxAndWaitForHash(
   }
 
   // Retry on errors.
-  while (attempt < N_SEND_TX_RETRIES) {
+  while (attempt < txSettings.nSendTxRetries) {
     try {
       logger.info(
         `sendTxAndWaitForHash(): currentTx = ${JSON.stringify(serializeBigInts(currentTx))}`,
@@ -82,9 +80,10 @@ async function sendTxAndWaitForHash(
       }
     }
   }
-  throw new Error(
-    `sendTxAndWaitForHash(): Failed to send transaction after ${attempt} retries`,
-  );
+
+  const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${attempt} retries`;
+  logger.error(error_msg);
+  throw new Error(error_msg);
 }
 
 export async function escalatedSendTransaction(
@@ -96,6 +95,9 @@ export async function escalatedSendTransaction(
   gasLimit?: number,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
+  logger.debug(
+    `escalatedSendTransaction(): txSettings = ${JSON.stringify(txSettings)}`,
+  );
 
   // Estimate gas using a profiled model for gas use.
   // CommitmentService.gas.ts estimates the following gas use
@@ -107,8 +109,7 @@ export async function escalatedSendTransaction(
   // This code is sensitive and should be modified only after careful testing and profiling of gas use.
   if (gasLimit === undefined) {
     gasLimit =
-      (150000 + 400 * Math.max(0, data.length - 778)) *
-      TransactionSettings.GAS_FACTOR;
+      (150000 + 400 * Math.max(0, data.length - 778)) * txSettings.gasFactor;
   }
   logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
@@ -121,7 +122,7 @@ export async function escalatedSendTransaction(
   // Use fixed point arithmetic to multiply BigInt by a float.
   const gasPrice =
     (currentGasPrice *
-      BigInt(Math.round(TransactionSettings.GAS_PRICE_INITIAL_FACTOR * 100))) /
+      BigInt(Math.round(txSettings.gasPriceInitialFactor * 100))) /
     BigInt(100);
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
@@ -162,21 +163,17 @@ export async function escalatedSendTransaction(
 
   // The timeout after which, if the tx has not completed,
   // we will escalate the gas price.
-  let gasPriceEscalationTimeout =
-    TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
+  let gasPriceEscalationTimeout = txSettings.gasPriceEscalationInterval;
   // The time after which, if the tx has not completed,
   // we will escalate the gas price.
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
   // The interval for polling for tx completion.
   let txCompletionCheckTimeout = 0;
-  while (
-    numGasPriceEscalations < TransactionSettings.MAX_GAS_PRICE_ESCALATIONS
-  ) {
+  while (numGasPriceEscalations < txSettings.maxGasPriceEscalations) {
     // Wait for the interval before checking transaction status.
     // Increase the interval between checks to back off on heavy load.
-    txCompletionCheckTimeout +=
-      TransactionSettings.TX_COMPLETION_CHECK_INTERVAL;
+    txCompletionCheckTimeout += txSettings.txCompletionCheckInterval;
     await new Promise((resolve) =>
       setTimeout(resolve, txCompletionCheckTimeout),
     );
@@ -208,16 +205,13 @@ export async function escalatedSendTransaction(
       // Record escalation and set the next escalation time.
       numGasPriceEscalations++;
       // Increase the interval between escalations to back off on heavy load.
-      gasPriceEscalationTimeout +=
-        TransactionSettings.GAS_PRICE_ESCALATION_INTERVAL;
+      gasPriceEscalationTimeout += txSettings.gasPriceEscalationInterval;
       nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
 
       const currentGasPrice = BigInt(tx.gasPrice);
       tx.gasPrice =
         (currentGasPrice *
-          BigInt(
-            Math.round(TransactionSettings.GAS_PRICE_ESCALATION_FACTOR * 100),
-          )) /
+          BigInt(Math.round(txSettings.gasPriceEscalationFactor * 100))) /
         BigInt(100);
       logger.info(
         `escalatedSendTransaction(): Escalated tx.gasPrice = ${tx.gasPrice}`,
@@ -225,7 +219,9 @@ export async function escalatedSendTransaction(
       // Ensure nonce remains the same for the replacement transaction.
       // This will speed up the previously submitted tx.
       tx.nonce = nonce;
-      logger.debug(`escalatedSendTransaction(): tx = ${serializeBigInts(tx)}`);
+      logger.debug(
+        `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
+      );
 
       // Send the escalated tx.
       try {
@@ -242,7 +238,7 @@ export async function escalatedSendTransaction(
     }
   }
 
-  throw new Error(
-    `Transaction was not confirmed after ${TransactionSettings.MAX_GAS_PRICE_ESCALATIONS} attempts.`,
-  );
+  const error_msg = `Transaction was not confirmed after ${txSettings.maxGasPriceEscalations} attempts.`;
+  logger.error(error_msg);
+  throw new Error(error_msg);
 }
