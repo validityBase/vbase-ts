@@ -6,6 +6,42 @@ import { TransactionReceipt } from "web3-types";
 import txSettings from "./txSettings";
 import { serializeBigInts } from "./utils";
 
+function verifyTx(signer: Signer, tx: TransactionRequest): void {
+  // The caller should always set the gasLimit and nonce.
+  // using the heuristic in escalatedSendTransaction().
+  if (!tx.gasLimit) {
+    throw new Error("verifyTx(): gasLimit undefined");
+  }
+  // The caller should always set the nonce.
+  if (tx.nonce === undefined || tx.nonce === null) {
+    throw new Error("verifyTx(): nonce undefined");
+  }
+}
+
+async function getNonce(signer: Signer): Promise<number> {
+  if (signer === undefined || signer === null) {
+    throw new Error("getNonce(): signer undefined");
+  }
+  if (signer.provider === undefined || signer.provider === null) {
+    throw new Error("getNonce(): signer.provider undefined");
+  }
+
+  // Ensure signer is not an instance of NonceManager.
+  // NonceManager overrides nonce based on its own logic
+  // and breaks nonce reset and transaction retry with higher gas limit.
+  if (signer instanceof NonceManager) {
+    throw new Error("getNonce(): signer is a NonceManager");
+  }
+
+  // One would expect signer.getNonce() to return the correct nonce,
+  // but it does not.
+  // TODO: Long-term nonce management should be done via a single
+  // globally synchronized counter
+  // with a check on failure since the following operation is expensive.
+  const nonce = await signer.provider.getTransactionCount(signer.getAddress());
+  return nonce;
+}
+
 async function sendTxAndWaitForHash(
   signer: Signer,
   tx: TransactionRequest,
@@ -14,21 +50,7 @@ async function sendTxAndWaitForHash(
   let attempt = 0;
   const currentTx = { ...tx };
 
-  // Ensure signer is not an instance of NonceManager.
-  // NonceManager overrides nonce based on its own logic
-  // and breaks nonce reset and transaction retry with higher gas limit.
-  if (signer instanceof NonceManager) {
-    throw new Error("sendTxAndWaitForHash(): signer is a NonceManager");
-  }
-
-  // The caller should always set the gasLimit and nonce.
-  // using the heuristic in escalatedSendTransaction().
-  if (!currentTx.gasLimit) {
-    throw new Error("sendTxAndWaitForHash(): gasLimit undefined");
-  }
-  if (currentTx.nonce === undefined || currentTx.nonce === null) {
-    throw new Error("sendTxAndWaitForHash(): nonce undefined");
-  }
+  verifyTx(signer, currentTx);
 
   // Retry on errors.
   while (attempt < txSettings.nSendTxRetries) {
@@ -62,16 +84,7 @@ async function sendTxAndWaitForHash(
         // If the error complains about nonce, attempt to update nonce.
         // This will handle cases where a prior tx has failed
         // and the client is confused about the nonce.
-        // One would expect signer.getNonce() to return the correct nonce,
-        // but it does not.
-        // TODO: Long-term nonce management should be done via a single
-        // globally synchronized counter
-        // with a check on failure since the following operation is expensive.
-        if (signer.provider !== null) {
-          currentTx.nonce = await signer.provider.getTransactionCount(
-            signer.getAddress(),
-          );
-        }
+        currentTx.nonce = await getNonce(signer);
         attempt++;
         logger.info(
           `sendTxAndWaitForHashWithRetry(): Retrying with nonce = ${currentTx.nonce}`,
@@ -84,6 +97,53 @@ async function sendTxAndWaitForHash(
   const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${attempt} retries`;
   logger.error(error_msg);
   throw new Error(error_msg);
+}
+
+function estimateGasLimit(data: string, logger: pino.Logger): number {
+  // Estimate gas using a profiled model for gas use.
+  // CommitmentService.gas.ts estimates the following gas use
+  // as a function of data.length.
+  // gas = 150,000 + 400 * max(0, data.length - 778)
+  // The reason for this structure is as follows:
+  // The fixed cost of a commitment for a setObject with ~778 char len data is ~100K gas.
+  // The slope of gas cost function is ~366gas/char of data.length.
+  // This code is sensitive and should be modified only after careful testing and profiling of gas use.
+  const gasLimit =
+    (150000 + 400 * Math.max(0, data.length - 778)) * txSettings.gasFactor;
+  logger.debug(`estimateGasLimit(): gasLimit = ${gasLimit}`);
+  return gasLimit;
+}
+
+async function getCompletedTxReceipt(
+  web3: Web3,
+  txHashes: string[],
+  logger: pino.Logger,
+): Promise<TransactionReceipt | null> {
+  logger.debug("> getCompletedTxReceipt()");
+  for (const txHash of txHashes) {
+    logger.debug(`getCompletedTxReceipt(): txHash = ${txHash}`);
+    // Check if any of the previously sent transactions has been confirmed.
+    let receipt: null | TransactionReceipt;
+    try {
+      receipt = await web3.eth.getTransactionReceipt(txHash);
+      receipt = serializeBigInts(receipt);
+    } catch (error) {
+      logger.error(
+        `getCompletedTxReceipt(): getTransactionReceipt(): error = ${JSON.stringify(
+          error,
+        )}`,
+      );
+      receipt = null;
+    }
+    logger.debug(
+      `getCompletedTxReceipt(): receipt = ${JSON.stringify(receipt)}`,
+    );
+    if (receipt && receipt.status) {
+      // Transaction is confirmed, return the receipt.
+      return receipt;
+    }
+  }
+  return null;
 }
 
 export async function escalatedSendTransaction(
@@ -99,26 +159,15 @@ export async function escalatedSendTransaction(
     `escalatedSendTransaction(): txSettings = ${JSON.stringify(txSettings)}`,
   );
 
-  // Estimate gas using a profiled model for gas use.
-  // CommitmentService.gas.ts estimates the following gas use
-  // as a function of data.length.
-  // gas = 150,000 + 400 * max(0, data.length - 778)
-  // The reason for this structure is as follows:
-  // The fixed cost of a commitment for a setObject with ~778 char len data is ~100K gas.
-  // The slope of gas cost function is ~366gas/char of data.length.
-  // This code is sensitive and should be modified only after careful testing and profiling of gas use.
   if (gasLimit === undefined) {
-    gasLimit =
-      (150000 + 400 * Math.max(0, data.length - 778)) * txSettings.gasFactor;
+    gasLimit = estimateGasLimit(data, logger);
   }
-  logger.debug(`escalatedSendTransaction(): gasLimit = ${gasLimit}`);
 
   // Calculate an aggressive gas price premium for the initial tx.
   const currentGasPrice = await web3.eth.getGasPrice();
   logger.debug(
     `escalatedSendTransaction(): currentGasPrice = ${currentGasPrice}`,
   );
-
   // Use fixed point arithmetic to multiply BigInt by a float.
   const gasPrice =
     (currentGasPrice *
@@ -127,10 +176,7 @@ export async function escalatedSendTransaction(
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
   // Define the nonce we will use for the initial tx and any replacements.
-  if (!signer.provider) {
-    throw new Error("escalatedSendTransaction(): signer.provider undefined");
-  }
-  const nonce = await signer.provider.getTransactionCount(signer.getAddress());
+  const nonce = await getNonce(signer);
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
   const tx = {
@@ -144,9 +190,12 @@ export async function escalatedSendTransaction(
     `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
   );
 
+  // We must keep all sent txs in a list since any of the previously sent
+  // txs may get confirmed when escalating or resending any of the txs.
+  // Initialize an array to store all transaction hashes.
+  const txHashes: string[] = [];
+
   // Send the initial tx.
-  // The initial send should not fail.
-  // If we encounter its failures in normal operation, we should add retries.
   let txHash: string;
   try {
     txHash = await sendTxAndWaitForHash(signer, tx, logger);
@@ -157,9 +206,8 @@ export async function escalatedSendTransaction(
     throw error;
   }
   logger.debug(`escalatedSendTransaction(): Initial txHash = ${txHash}`);
-  // We must keep all sent txs in a list since any of the previously sent
-  // txs may get confirmed when escalating.
-  // TODO: Add tx list.
+  txHashes.push(txHash);
+  logger.debug(`escalatedSendTransaction(): txHashes = ${txHashes}`);
 
   // The timeout after which, if the tx has not completed,
   // we will escalate the gas price.
@@ -178,19 +226,8 @@ export async function escalatedSendTransaction(
       setTimeout(resolve, txCompletionCheckTimeout),
     );
 
-    // Check if any of the previously sent transactions has been confirmed.
-    let receipt: null | TransactionReceipt;
-    try {
-      receipt = await web3.eth.getTransactionReceipt(txHash);
-      receipt = serializeBigInts(receipt);
-    } catch (error) {
-      logger.error(
-        `escalatedSendTransaction(): getTransactionReceipt(): error = ${JSON.stringify(
-          error,
-        )}`,
-      );
-      receipt = null;
-    }
+    // Check the status of all transactions.
+    const receipt = await getCompletedTxReceipt(web3, txHashes, logger);
     if (receipt && receipt.status) {
       // Transaction is confirmed, return the receipt.
       logger.info(
@@ -235,6 +272,8 @@ export async function escalatedSendTransaction(
         throw error;
       }
       logger.debug(`escalatedSendTransaction(): Escalated txHash = ${txHash}`);
+      txHashes.push(txHash);
+      logger.debug(`escalatedSendTransaction(): txHashes = ${txHashes}`);
     }
   }
 
