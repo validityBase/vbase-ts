@@ -12,6 +12,9 @@
     "build": "tsc -p tsconfig.json",
     "postinstall": "npm run build",
     "test": "hardhat test",
+    "test:stress": "npx hardhat test test/Transactions.stress.ts",
+    "test:stress:proxy": "npx hardhat --network localhost_proxy test test/Transactions.stress.ts ",
+    "start:proxy": "npx ts-node test/proxy.ts",
     "format:check": "prettier --check '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "format:write": "prettier --write '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "lint:check": "eslint '**/*.{js,jsx,ts,tsx}'",
@@ -30,8 +33,10 @@
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@typescript-eslint/eslint-plugin": "^7.7.1",
     "@typescript-eslint/parser": "^7.7.1",
+    "concurrently": "^8.2.2",
     "eslint": "^8.57.0",
     "hardhat": "^2.22.3",
+    "mockttp": "^3.15.0",
     "prettier": "^3.2.5",
     "typescript": "^4.0.0"
   }

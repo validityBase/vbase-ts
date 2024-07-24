@@ -1,25 +1,18 @@
 import { expect } from "chai";
-import { Signer } from "ethers";
-import hre, { ethers } from "hardhat";
+import hre, { ethers, network } from "hardhat";
+import { randomBytes } from "crypto";
 import { Web3 } from "web3";
 
 import artifact from "../src/common/contracts/CommitmentService.json";
 import { escalatedSendTransaction } from "../src/vbase/transactions";
 import txSettings from "../src/vbase/txSettings";
 
-import {
-  TEST_HASH2,
-  SIGNER_PRIVATE_KEY,
-  LOGGER,
-  encodeFunctionCall,
-} from "./common";
+import { SIGNER_PRIVATE_KEY, LOGGER, encodeFunctionCall } from "./common";
 
-describe("CommitmentService", () => {
+describe("Transactions", () => {
   // Disable warning for commitmentService: any since we do not have access to the type data.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let commitmentService: any;
-  let owner: Signer;
-  let sender: Signer;
   let web3: Web3;
   let ethersWallet: ethers.Wallet;
   let commitmentServiceAddress: string;
@@ -38,7 +31,24 @@ describe("CommitmentService", () => {
     );
   }
 
+  async function callRandomAddObject() {
+    const hash = randomBytes(32);
+    const data = encodeFunctionCall(web3, "addObject", [hash]).toString();
+    await escalatedSendTransactionWorker(data);
+    expect(
+      await commitmentService.verifyUserObject(
+        ethersWallet.address,
+        hash,
+        (await ethers.provider.getBlock("latest"))?.timestamp ?? 0,
+      ),
+    ).to.equal(true);
+  }
+
   beforeEach(async function () {
+    // Reset mining behavior in case it was messed up by prior tests.
+    await network.provider.send("evm_setIntervalMining", [0]);
+    await network.provider.send("evm_setAutomine", [true]);
+
     [owner, sender] = await ethers.getSigners();
     const Contract = await ethers.getContractFactory(
       artifact.abi,
@@ -48,20 +58,31 @@ describe("CommitmentService", () => {
     web3 = new Web3(hre.network.provider);
     ethersWallet = new ethers.Wallet(SIGNER_PRIVATE_KEY, ethers.provider);
     commitmentServiceAddress = await commitmentService.getAddress();
-    // Set short gasPriceEscalationInterval for testing.
-    txSettings.gasPriceEscalationInterval = 2000;
+    // Set short intervals for stress testing.
+    txSettings.gasPriceEscalationInterval = 1000;
+    txSettings.txCompletionCheckInterval = 500;
   });
 
-  describe("UserSet", () => {
-    it("Executes addSet via escalatedSendTransaction", async () => {
-      const data = encodeFunctionCall(web3, "addSet", [TEST_HASH2]).toString();
-      await escalatedSendTransactionWorker(data);
-      expect(
-        await commitmentService.verifyUserSets(
-          ethersWallet.address,
-          TEST_HASH2,
-        ),
-      ).to.equal(true);
+  describe("commitmentService", () => {
+    it("escalatedSendTransaction baseline test", async () => {
+      await callRandomAddObject();
+    });
+
+    it("escalatedSendTransaction loop", async () => {
+      // Set up simulated contention and heavy use as in the spec test.
+      await network.provider.send("evm_mine");
+      await network.provider.send("evm_setAutomine", [false]);
+
+      for (let i = 0; i < 100; i++) {
+        // Use a random block time to simulate contention
+        // and trigger various race conditions.
+        const blockTime = 1000 + Math.floor(Math.random() * 5 * 1000);
+        await network.provider.send("evm_setIntervalMining", [blockTime]);
+        await callRandomAddObject();
+      }
+
+      await network.provider.send("evm_setIntervalMining", [0]);
+      await network.provider.send("evm_setAutomine", [true]);
     });
   });
 });

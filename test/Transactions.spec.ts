@@ -15,7 +15,7 @@ import {
   encodeFunctionCall,
 } from "./common";
 
-describe("CommitmentService", () => {
+describe("Transactions", () => {
   // Disable warning for commitmentService: any since we do not have access to the type data.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let commitmentService: any;
@@ -40,6 +40,10 @@ describe("CommitmentService", () => {
   }
 
   beforeEach(async function () {
+    // Reset mining behavior in case it was messed up by prior tests.
+    await network.provider.send("evm_setIntervalMining", [0]);
+    await network.provider.send("evm_setAutomine", [true]);
+
     [owner, sender] = await ethers.getSigners();
     const Contract = await ethers.getContractFactory(
       artifact.abi,
@@ -53,7 +57,7 @@ describe("CommitmentService", () => {
     txSettings.gasPriceEscalationInterval = 2000;
   });
 
-  describe("UserSet", () => {
+  describe("CommitmentService", () => {
     it("Executes addSet", async () => {
       await expect(await commitmentService.addSet(TEST_HASH1))
         .to.emit(commitmentService, "AddSet")
