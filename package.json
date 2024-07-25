@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "postinstall": "npm run build",
     "test": "hardhat test",
+    "test:spec:localhost": "npx hardhat --network localhost test test/Transactions.spec.ts",
     "test:stress": "npx hardhat test test/Transactions.stress.ts",
     "test:stress:proxy": "npx hardhat --network localhost_proxy test test/Transactions.stress.ts ",
     "start:proxy": "npx ts-node test/proxy.ts",

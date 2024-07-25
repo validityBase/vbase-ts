@@ -37,7 +37,7 @@ jobs:
         run: npm install
 
       - name: Run tests
-        run: npm run test --network localhost
+        run: npm run test:spec:localhost
 
       - name: Stop and remove the Docker container
         run: |
