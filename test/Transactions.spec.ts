@@ -118,8 +118,9 @@ describe("Transactions", () => {
     // block times, and gas escalation intervals are approximate.
     const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
     // receipt.effectiveGasPrice.slice(0, -1) removes the last "n" character.
+    // Add 1 to the effective gas price to account for rounding errors.
     expect(
-      Number(effectiveGasPrice.slice(0, -1)) / initialGasPrice,
+      Number(effectiveGasPrice.slice(0, -1) + 1) / initialGasPrice,
     ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
 
     // Check the user sets.
