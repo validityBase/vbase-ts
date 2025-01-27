@@ -20,8 +20,8 @@
     "start:proxy-stress:high-failure": "MAX_DELAY_MS=1000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.9 npx ts-node test/proxy-stress.ts",
     "format:check": "prettier --check '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "format:write": "prettier --write '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
-    "lint:check": "eslint '**/*.{js,jsx,ts,tsx}'",
-    "lint:write": "eslint '**/*.{js,jsx,ts,tsx}' --fix"
+    "lint:check": "eslint 'src/**/*.{js,jsx,ts,tsx}' 'test/**/*.{js,jsx,ts,tsx}' '*.{js,ts}'",
+    "lint:write": "eslint 'src/**/*.{js,jsx,ts,tsx}' 'test/**/*.{js,jsx,ts,tsx}' '*.{js,ts}' --fix"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

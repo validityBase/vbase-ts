@@ -192,7 +192,6 @@ describe("Transactions", () => {
     // following doublings.
     // gasUsed is number represented as a string with a trailing "n".
     const gasUsed = Number(String(receipt.gasUsed).slice(0, -1));
-    expect(gasUsed).to.be.finite;
     expect(gasUsed).to.be.greaterThan(44000);
     expect(gasUsed).to.be.lessThan(88000);
   });
