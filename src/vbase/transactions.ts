@@ -61,8 +61,11 @@ async function sendTxAndWaitForHash(
   verifyTx(signer, currentTx);
 
   // Retry on errors.
-  while (attempt < txSettings.nSendTxRetries) {
+  while (attempt++ < txSettings.nSendTxRetries) {
     try {
+      logger.info(
+        `sendTxAndWaitForHash(): attempt = ${attempt} of ${txSettings.nSendTxRetries}`,
+      );
       logger.info(
         `sendTxAndWaitForHash(): currentTx = ${JSON.stringify(serializeBigInts(currentTx))}`,
       );
@@ -107,7 +110,6 @@ async function sendTxAndWaitForHash(
           throw error;
         }
       }
-      attempt++;
     }
   }
 
