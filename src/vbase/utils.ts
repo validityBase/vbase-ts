@@ -1,3 +1,13 @@
+/**
+ * Recursively serializes BigInt values within an object, array, or nested structure.
+ *
+ * This function converts all `bigint` values to their string representation with an `"n"` suffix,
+ * ensuring compatibility with JSON serialization or systems that do not support native BigInts.
+ *
+ * @param {any} obj - The object, array, or value that may contain BigInt values.
+ *
+ * @returns {any} A new object, array, or value where all BigInts have been converted to strings.
+ */
 // This is a general function operating on a variety of objects.
 // Disable warning for obj: any.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -28,6 +38,16 @@ export function serializeBigInts(obj: any): any {
   return obj;
 }
 
+/**
+ * Converts an object into a pretty-printed JSON string.
+ *
+ * This function is useful for logging and debugging by formatting objects
+ * with indentation for better readability.
+ *
+ * @param {any} obj - The object to be converted into a formatted JSON string.
+ *
+ * @returns {string} A JSON-formatted string with indentation for readability.
+ */
 // This is a general function operating on a variety of objects.
 // Disable warning for obj: any.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

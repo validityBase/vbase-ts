@@ -7,30 +7,66 @@ dotenv.config();
 // This also ensures that settings for a given chain are used jointly and consistently.
 const settingsEnv = JSON.parse(process.env.VBASE_TS_TX_SETTINGS || "{}");
 
-// Tx gas, timeout, and escalation settings
-// These differ across different EVM chains.
-// The default values are set for the most conservative values
-// that are likely to work robustly across the most chains.
-// Specific chains with shorter block times, etc. can override these
-// to more optimal values.
+/**
+ * Configuration settings for transaction gas, timeout, and escalation behavior.
+ * These settings are designed to work conservatively across multiple EVM chains,
+ * with default values ensuring robust execution. Chains with shorter block times
+ * or different gas dynamics can override these for better optimization.
+ */
 const txSettings = {
-  // Gas limit factor. The multiple of the estimated gas limit for the transaction.
-  // Set a high limit to support L2s that must account for L1 gas charges.
-  // This is a high value appropriate for L2 with L1 gas charges
-  // where gas estimates are not reliable.
+  /**
+   * Gas limit factor: A multiplier applied to the estimated gas limit.
+   * Set to a high value for L2s that require accounting for L1 gas charges.
+   *
+   * @default 20
+   */
   gasFactor: settingsEnv.gasFactor || 20,
-  // Pay an aggressive gas price premium to ensure prompt execution.
+
+  /**
+   * Initial gas price multiplier: Applies a premium to the estimated gas price
+   * to improve transaction execution speed.
+   *
+   * @default 1.5
+   */
   gasPriceInitialFactor: settingsEnv.gasPriceInitialFactor || 1.5,
-  // Gas price escalation factor.
+
+  /**
+   * Gas price escalation factor: The multiplier for increasing the gas price
+   * if the transaction remains unconfirmed.
+   *
+   * @default 2
+   */
   gasPriceEscalationFactor: settingsEnv.gasPriceEscalationFactor || 2,
-  // Interval for escalating gas price for uncompleted transactions, in milliseconds.
-  // This is a low value appropriate for slow Ethereum mainnet.
+
+  /**
+   * Gas price escalation interval in milliseconds: Defines how frequently
+   * the gas price should be escalated for unconfirmed transactions.
+   *
+   * This default is suited for Ethereum mainnet but can be lowered for faster chains.
+   *
+   * @default 10000 (10 seconds)
+   */
   gasPriceEscalationInterval: settingsEnv.gasPriceEscalationInterval || 10000,
-  // Maximum attempts for escalating transactions.
+
+  /**
+   * Maximum number of gas price escalations before giving up.
+   *
+   * @default 5
+   */
   maxGasPriceEscalations: settingsEnv.maxGasPriceEscalations || 5,
-  // Interval for checking transaction for completion, in milliseconds.
+
+  /**
+   * Interval for checking whether a transaction has been completed (in milliseconds).
+   *
+   * @default 1000 (1 second)
+   */
   txCompletionCheckInterval: settingsEnv.txCompletionCheckInterval || 1000,
-  // Maximum number of retries for sending a transaction.
+
+  /**
+   * Maximum number of retries when attempting to send a transaction.
+   *
+   * @default 5
+   */
   nSendTxRetries: settingsEnv.nSendTxRetries || 5,
 };
 
