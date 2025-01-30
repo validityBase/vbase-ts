@@ -9,7 +9,10 @@ import txSettings from "../src/vbase/txSettings";
 
 import { SIGNER_PRIVATE_KEY, LOGGER, encodeFunctionCall } from "./common";
 
-describe("Transactions", () => {
+describe("Transactions", function () {
+  // Set timeout for 10 hours (is ms) for a long-running stress test.
+  this.timeout(10 * 60 * 60 * 1000);
+
   // Disable warning for commitmentService: any since we do not have access to the type data.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let commitmentService: any;
@@ -34,12 +37,13 @@ describe("Transactions", () => {
   async function callRandomAddObject() {
     const hash = randomBytes(32);
     const data = encodeFunctionCall(web3, "addObject", [hash]).toString();
-    await escalatedSendTransactionWorker(data);
+    const transactionReceipt = await escalatedSendTransactionWorker(data);
     expect(
       await commitmentService.verifyUserObject(
         ethersWallet.address,
         hash,
-        (await ethers.provider.getBlock("latest"))?.timestamp ?? 0,
+        (await ethers.provider.getBlock(transactionReceipt.blockHash))
+          .timestamp,
       ),
     ).to.equal(true);
   }
@@ -49,7 +53,6 @@ describe("Transactions", () => {
     await network.provider.send("evm_setIntervalMining", [0]);
     await network.provider.send("evm_setAutomine", [true]);
 
-    [owner, sender] = await ethers.getSigners();
     const Contract = await ethers.getContractFactory(
       artifact.abi,
       artifact.bytecode,
