@@ -206,6 +206,20 @@ async function getCompletedTxReceipt(
   return null;
 }
 
+/**
+ * Sends an Ethereum transaction with escalation logic to increase gas price if needed.
+ *
+ * @param {Web3} web3 - The Web3 instance used for interacting with the blockchain.
+ * @param {Signer} signer - The Ethereum signer responsible for signing the transaction.
+ * @param {string} to - The recipient Ethereum address.
+ * @param {string} data - The encoded transaction data.
+ * @param {pino.Logger} logger - The logger instance for debugging and error tracking.
+ * @param {number} [gasLimit] - Optional gas limit for the transaction.
+ *
+ * @returns {Promise<string>} - A promise that resolves to the transaction hash.
+ *
+ * @throws {Error} If the transaction fails to send or encounters an error.
+ */
 export async function escalatedSendTransaction(
   web3: Web3,
   signer: Signer,
