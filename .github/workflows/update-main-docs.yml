@@ -27,4 +27,3 @@ jobs:
         with:
           docs-repo-access-token: ${{ secrets.DOCS_REPO_ACCESS_TOKEN }}
           source-docs-path: '_docs'
-          target-repository-branch: 'feature/vbase-py-doc-publishing'
