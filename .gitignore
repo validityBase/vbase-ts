@@ -19,3 +19,4 @@ artifacts
 
 # Config
 .env*
+/_docs
