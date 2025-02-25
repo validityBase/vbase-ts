@@ -26,6 +26,8 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
 
 ## Tests
 
+### Unit Tests
+
 1. Change to the working directory:
 
    ```bash
@@ -42,9 +44,55 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
 
    1. Run a specific named test:
 
-      ```beash
+      ```bash
       npm run test -- --grep "Executes addSet$"
       ```
+
+### Stress Tests
+
+1. Run general RPC stress tests:
+
+   - Terminal 1:
+
+   ```
+   npm run start:proxy-stress
+   ```
+
+   - Terminals 2+:
+
+   ```
+   npm run test:stress:proxy
+   ```
+
+1. Run RPC delay stress tests:
+
+   - Terminal 1:
+
+   ```
+   npm run start:proxy-stress:long-delay
+   ```
+
+   - Terminals 2+:
+
+   ```
+   npm run test:stress:proxy
+   ```
+
+1. Run RPC high failure stress tests:
+
+   - Terminal 1:
+
+   ```
+   npm run start:proxy-stress:high-failure
+   ```
+
+   - Terminals 2+:
+
+   ```
+   npm run test:stress:proxy
+   ```
+
+## Cleanup
 
 1. Format:
 

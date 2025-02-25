@@ -3,7 +3,10 @@
   "ignorePaths": [],
   "dictionaryDefinitions": [],
   "dictionaries": [],
-  "words": ["mockttp"],
+  "words": [
+    "backtests",
+    "mockttp"
+  ],
   "ignoreWords": [],
   "import": []
 }

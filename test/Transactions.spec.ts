@@ -1,6 +1,7 @@
 import { expect } from "chai";
 import { Signer } from "ethers";
 import hre, { ethers, network } from "hardhat";
+import { setNextBlockBaseFeePerGas } from "@nomicfoundation/hardhat-network-helpers";
 import { Web3 } from "web3";
 
 import artifact from "../src/common/contracts/CommitmentService.json";
@@ -194,5 +195,46 @@ describe("Transactions", () => {
     const gasUsed = Number(String(receipt.gasUsed).slice(0, -1));
     expect(gasUsed).to.be.greaterThan(44000);
     expect(gasUsed).to.be.lessThan(88000);
+  });
+
+  it("Executes addSet via escalatedSendTransaction with a gas spike", async () => {
+    // This test is similar to the test above, but with a gas spike.
+    await network.provider.send("evm_mine");
+
+    // Set a long enough block time to get a gas spike after the tx is submitted.
+    const BLOCK_TIME = 2000;
+    await network.provider.send("evm_setAutomine", [false]);
+    await network.provider.send("evm_setIntervalMining", [BLOCK_TIME]);
+
+    const initialGasPrice =
+      Number(await web3.eth.getGasPrice()) * txSettings.gasPriceInitialFactor;
+
+    // Spike the gas price halfway through the block time.
+    setTimeout(async () => {
+      console.log("> Spiking gas price...");
+      const newGasPrice = initialGasPrice * 8;
+      await setNextBlockBaseFeePerGas(newGasPrice);
+      console.log(
+        "< Spiked gas price: initialGasPrice = " +
+          initialGasPrice +
+          ", newGasPrice = " +
+          newGasPrice,
+      );
+    }, BLOCK_TIME / 2);
+
+    const data = encodeFunctionCall(web3, "addSet", [TEST_HASH2]).toString();
+    const receipt = await escalatedSendTransactionWorker(data);
+
+    const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
+    expect(
+      Number(effectiveGasPrice.slice(0, -1) + 1) / initialGasPrice,
+    ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
+
+    expect(
+      await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH2),
+    ).to.equal(true);
+
+    await network.provider.send("evm_setIntervalMining", [0]);
+    await network.provider.send("evm_setAutomine", [true]);
   });
 });

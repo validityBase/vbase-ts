@@ -63,6 +63,15 @@ const txSettings = {
   txCompletionCheckInterval: settingsEnv.txCompletionCheckInterval || 1000,
 
   /**
+   * Random interval for checking whether a transaction has been completed (in milliseconds).
+   * We add a random delay to reduce collisions with other transactions.
+   *
+   * @default 1000 (1 second)
+   */
+  txCompletionCheckRndInterval:
+    settingsEnv.txCompletionCheckRndInterval || 1000,
+
+  /**
    * Maximum number of retries when attempting to send a transaction.
    *
    * @default 5
