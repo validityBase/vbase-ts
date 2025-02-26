@@ -1,0 +1,29 @@
+name: Update the Main Docs Repository
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  update-main-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install
+
+      - name: Build Markdown docs
+        run: |
+          npx typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs
+
+      - name: Publish Documents
+        uses: validityBase/docs/publish-docs-action@main
+        with:
+          docs-repo-access-token: ${{ secrets.DOCS_REPO_ACCESS_TOKEN }}
+          source-docs-path: '_docs'
