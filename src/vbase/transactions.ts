@@ -46,7 +46,15 @@ async function getNonce(signer: Signer): Promise<number> {
 // We will process specific errors in the catch block by parsing their messages.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function isNonceError(error: any): boolean {
-  return typeof error.message === "string" && error.message.includes("nonce");
+  return (
+    typeof error.message === "string" &&
+    // All error that include "nonce" in the message are nonce errors.
+    (error.message.includes("nonce") ||
+      // Errors that include "replacement fee too low" in the message are also nonce errors.
+      // This happens when there is a nonce collision with another tx
+      // and the node thinks we are submitting a replacement tx instead of a new one.
+      error.message.includes("replacement fee too low"))
+  );
 }
 
 async function sendTxAndWaitForHash(
@@ -55,10 +63,10 @@ async function sendTxAndWaitForHash(
   initialSend: boolean,
   logger: pino.Logger,
 ): Promise<string> {
+  logger.debug("> sendTxAndWaitForHash()");
   let attempt = 0;
-  const currentTx = { ...tx };
 
-  verifyTx(signer, currentTx);
+  verifyTx(signer, tx);
 
   // Retry on errors.
   while (attempt++ < txSettings.nSendTxRetries) {
@@ -67,12 +75,13 @@ async function sendTxAndWaitForHash(
         `sendTxAndWaitForHash(): attempt = ${attempt} of ${txSettings.nSendTxRetries}`,
       );
       logger.info(
-        `sendTxAndWaitForHash(): currentTx = ${JSON.stringify(serializeBigInts(currentTx))}`,
+        `sendTxAndWaitForHash(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
       );
-      const txResponse = await signer.sendTransaction(currentTx);
+      const txResponse = await signer.sendTransaction(tx);
       logger.info(
         `sendTxAndWaitForHash(): txResponse = ${JSON.stringify(txResponse)}`,
       );
+      logger.debug("< sendTxAndWaitForHash()");
       return txResponse.hash;
       // We will process specific errors in the catch block by parsing their messages.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -83,7 +92,7 @@ async function sendTxAndWaitForHash(
         // This will handle "intrinsic gas too low" errors from L2 sequencers
         // and related errors we get when testing low gas limits on other networks.
         // We also have to advance the nonce.
-        currentTx.gasLimit = (currentTx.gasLimit as number) * 2;
+        tx.gasLimit = (tx.gasLimit as number) * 2;
         logger.info("sendTxAndWaitForHash(): Retrying with doubled gasLimit");
         continue;
       }
@@ -97,9 +106,11 @@ async function sendTxAndWaitForHash(
           // to speed up the previously submitted tx.
           // If we update the nonce on escalated sends, we will
           // be submitting new transactions instead of speeding up the old ones.
-          currentTx.nonce = await getNonce(signer);
+          // Note that we need to update the nonce in the tx object
+          // such that it is updated for the caller.
+          tx.nonce = await getNonce(signer);
           logger.info(
-            `sendTxAndWaitForHash(): Retrying with nonce = ${currentTx.nonce}`,
+            `sendTxAndWaitForHash(): Retrying with nonce = ${tx.nonce}`,
           );
           continue;
         } else {
@@ -250,9 +261,11 @@ export async function escalatedSendTransaction(
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
   // Define the nonce we will use for the initial tx and any replacements.
-  // TODO: Read the nonce from a synchronized global counter atomically.
+  // TODO: Eventually, read the nonce from a synchronized global counter atomically.
   // The current code has a race condition where two transactions
   // could get the same nonce and one of them will fail with nonce too low.
+  // We address this by updating nonce on failure and retrying,
+  // but this is inefficient and could be avoided with a global counter.
   const nonce = await getNonce(signer);
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
@@ -273,7 +286,12 @@ export async function escalatedSendTransaction(
   const txHashes: string[] = [];
 
   // Send the initial tx.
+  // Note that the initial tx may have its nonce updated
+  // if a prior tx has completed and updated the nonce.
   await sendAndSaveTxHash(signer, tx, txHashes, true, logger);
+  logger.debug(
+    `escalatedSendTransaction(): After sendAndSaveTxHash() tx = ${JSON.stringify(serializeBigInts(tx))}`,
+  );
 
   // The timeout after which, if the tx has not completed,
   // we will escalate the gas price.
@@ -289,7 +307,9 @@ export async function escalatedSendTransaction(
   while (numGasPriceEscalations < txSettings.maxGasPriceEscalations) {
     // Wait for the interval before checking transaction status.
     // Increase the interval between checks to back off on heavy load.
-    txCompletionCheckTimeout += txSettings.txCompletionCheckInterval;
+    txCompletionCheckTimeout +=
+      txSettings.txCompletionCheckInterval +
+      Math.random() * txSettings.txCompletionCheckRndInterval;
     await new Promise((resolve) =>
       setTimeout(resolve, txCompletionCheckTimeout),
     );
@@ -301,6 +321,7 @@ export async function escalatedSendTransaction(
       logger.info(
         `escalatedSendTransaction(): Tx confirmed for numGasPriceEscalations = ${numGasPriceEscalations}`,
       );
+      logger.debug("< escalatedSendTransaction()");
       return receipt;
     }
 
@@ -326,15 +347,12 @@ export async function escalatedSendTransaction(
       logger.info(
         `escalatedSendTransaction(): Escalated tx.gasPrice = ${tx.gasPrice}`,
       );
-
-      // Ensure nonce remains the same for the replacement transaction.
-      // This will speed up the previously submitted tx instead of submitting a new one.
-      tx.nonce = nonce;
       logger.debug(
         `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
       );
 
       // Send the escalated tx.
+      // The tx will be submitted with the initial or updated nonce.
       try {
         await sendAndSaveTxHash(signer, tx, txHashes, false, logger);
       } catch (error) {
@@ -352,6 +370,7 @@ export async function escalatedSendTransaction(
             logger.info(
               `escalatedSendTransaction(): Tx confirmed for numGasPriceEscalations = ${numGasPriceEscalations}`,
             );
+            logger.debug("< escalatedSendTransaction()");
             return receipt;
           }
           // If we did not find a completed tx, the node may not have yet learned of its completion.
