@@ -287,6 +287,17 @@ async function getCompletedTxReceipt(
   return null;
 }
 
+async function waitForTxCompletionCheck(
+  numGasPriceEscalations: number,
+): Promise<void> {
+  // Increase the interval between checks to back off on heavy load.
+  const txCompletionCheckTimeout =
+    numGasPriceEscalations * txSettings.txCompletionCheckInterval +
+    Math.random() * txSettings.txCompletionCheckRndInterval;
+  await new Promise((resolve) => setTimeout(resolve, txCompletionCheckTimeout));
+  return;
+}
+
 /**
  * Sends an Ethereum transaction with escalation logic to increase gas price if needed.
  *
@@ -370,19 +381,10 @@ export async function escalatedSendTransaction(
   // we will escalate the gas price.
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
-  // The interval for polling for tx completion.
-  let txCompletionCheckTimeout = 0;
 
   // If the tx does not complete, escalate the gas price and resend.
   while (numGasPriceEscalations++ < txSettings.maxGasPriceEscalations - 1) {
-    // Wait for the interval before checking transaction status.
-    // Increase the interval between checks to back off on heavy load.
-    txCompletionCheckTimeout +=
-      txSettings.txCompletionCheckInterval +
-      Math.random() * txSettings.txCompletionCheckRndInterval;
-    await new Promise((resolve) =>
-      setTimeout(resolve, txCompletionCheckTimeout),
-    );
+    await waitForTxCompletionCheck(numGasPriceEscalations);
 
     // Check the status of all transactions.
     const receipt = await getCompletedTxReceipt(web3, txHashes, logger);

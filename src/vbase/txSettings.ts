@@ -53,7 +53,7 @@ const txSettings = {
    *
    * @default 5
    */
-  maxGasPriceEscalations: settingsEnv.maxGasPriceEscalations || 5,
+  maxGasPriceEscalations: settingsEnv.maxGasPriceEscalations || 10,
 
   /**
    * Interval for checking whether a transaction has been completed (in milliseconds).
