@@ -76,7 +76,14 @@ const txSettings = {
    *
    * @default 5
    */
-  nSendTxRetries: settingsEnv.nSendTxRetries || 5,
+  nSendTxRetries: settingsEnv.nSendTxRetries || 10,
+
+  /**
+   * Interval for retrying to send a transaction (in milliseconds).
+   *
+   * @default 1000 (1 second)
+   */
+  waitForSendTxRetryInterval: settingsEnv.waitForSendTxRetryInterval || 1000,
 };
 
 export default txSettings;

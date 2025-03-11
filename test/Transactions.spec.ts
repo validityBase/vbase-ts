@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { Signer } from "ethers";
+import { Signer, zeroPadBytes } from "ethers";
 import hre, { ethers, network } from "hardhat";
 import { setNextBlockBaseFeePerGas } from "@nomicfoundation/hardhat-network-helpers";
 import { Web3 } from "web3";
@@ -127,6 +127,52 @@ describe("Transactions", () => {
     // Check the user sets.
     expect(
       await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH2),
+    ).to.equal(true);
+
+    // Reset mining behavior.
+    await network.provider.send("evm_setIntervalMining", [0]);
+    await network.provider.send("evm_setAutomine", [true]);
+  });
+
+  it("Executes addSet via escalatedSendTransaction with a long block time in parallel", async () => {
+    // Set a long block interval as in the above test.
+    // The interval of 2 seconds is short enough
+    // to trigger retries yet complete the txs with their retry logic.
+    await network.provider.send("evm_mine");
+    const BLOCK_TIME = 2000;
+    await network.provider.send("evm_setAutomine", [false]);
+    await network.provider.send("evm_setIntervalMining", [BLOCK_TIME]);
+    const initialGasPrice =
+      Number(await web3.eth.getGasPrice()) * txSettings.gasPriceInitialFactor;
+
+    // Run the transactions in parallel.
+    const promises = Array.from({ length: 4 }, async (_, i) => {
+      let setHash = web3.utils.toHex(i + 1);
+      // Make sure the hash is a valid byte string of even length.
+      if (setHash.length % 2 !== 0) {
+        setHash = "0x0" + setHash.slice(2);
+      }
+      setHash = zeroPadBytes(setHash, 32);
+      console.log(`Sending tx ${i} with hash ${setHash}`);
+      const data = encodeFunctionCall(web3, "addSet", [setHash]).toString();
+      return await escalatedSendTransactionWorker(data);
+    });
+    const receipts = await Promise.all(promises);
+
+    // Verify that the txs have completed.
+    receipts.forEach((receipt) => {
+      const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
+      expect(
+        Number(effectiveGasPrice.slice(0, -1) + 1) / initialGasPrice,
+      ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
+    });
+
+    // Check the user sets.
+    expect(
+      await commitmentService.verifyUserSets(
+        ethersWallet.address,
+        zeroPadBytes("0x0A", 32),
+      ),
     ).to.equal(true);
 
     // Reset mining behavior.
