@@ -42,6 +42,21 @@ async function getNonce(signer: Signer): Promise<number> {
   return nonce;
 }
 
+async function waitForSendTxRetry(
+  attempt: number,
+  logger: pino.Logger,
+): Promise<void> {
+  // Wait for the interval before retrying tx submission.
+  // Increase the interval between checks to back off on heavy load.
+  // Add a random factor to avoid collisions with other clients.
+  const sendTxRetryTimeout =
+    attempt * txSettings.waitForSendTxRetryInterval + Math.random();
+  logger.debug(
+    `waitForSendTxRetry(): sendTxRetryTimeout = ${sendTxRetryTimeout}`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, sendTxRetryTimeout));
+}
+
 // Check if the error is a nonce error.
 // We will process specific errors in the catch block by parsing their messages.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -57,6 +72,55 @@ function isNonceError(error: any): boolean {
   );
 }
 
+// Check if the error is a low gas error.
+// We will process specific errors in the catch block by parsing their messages.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isGasError(error: any): boolean {
+  return typeof error.message === "string" && error.message.includes("gas");
+}
+
+async function increaseGasLimit(
+  tx: TransactionRequest,
+  signer: Signer,
+): Promise<void> {
+  if (!tx.gasLimit) {
+    throw new Error("increaseGasLimit(): gasLimit undefined");
+  }
+  tx.gasLimit = BigInt(tx.gasLimit.toString()) * BigInt(2);
+
+  // Get the current block number.
+  if (signer === null) {
+    throw new Error("increaseGasLimit(): signer undefined");
+  }
+  if (signer.provider === null) {
+    throw new Error("increaseGasLimit(): signer.provider undefined");
+  }
+  const currentBlock = await signer.provider.getBlock("latest");
+  if (currentBlock === null) {
+    throw new Error("increaseGasLimit(): currentBlock undefined");
+  }
+  const currentBlockNumber = currentBlock.number;
+
+  // Update blockGasLimit if the block has changed.
+  if (
+    increaseGasLimit.blockGasLimit === null ||
+    increaseGasLimit.lastBlockNumber !== currentBlockNumber
+  ) {
+    increaseGasLimit.blockGasLimit = currentBlock.gasLimit;
+    increaseGasLimit.lastBlockNumber = currentBlockNumber;
+  }
+
+  // Cap the gasLimit at the block gas limit.
+  if (tx.gasLimit > increaseGasLimit.blockGasLimit) {
+    tx.gasLimit = increaseGasLimit.blockGasLimit;
+  }
+}
+
+// Attach static variables to the function for caching via a property.
+// Static variable to store the block gas limit.
+increaseGasLimit.blockGasLimit = null as bigint | null;
+increaseGasLimit.lastBlockNumber = null as number | null;
+
 async function sendTxAndWaitForHash(
   signer: Signer,
   tx: TransactionRequest,
@@ -69,7 +133,7 @@ async function sendTxAndWaitForHash(
   verifyTx(signer, tx);
 
   // Retry on errors.
-  while (attempt++ < txSettings.nSendTxRetries) {
+  while (attempt++ < txSettings.nSendTxRetries - 1) {
     try {
       logger.info(
         `sendTxAndWaitForHash(): attempt = ${attempt} of ${txSettings.nSendTxRetries}`,
@@ -87,15 +151,8 @@ async function sendTxAndWaitForHash(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       logger.error(`sendTxAndWaitForHash(): error = ${error}`);
-      if (typeof error.message === "string" && error.message.includes("gas")) {
-        // If the error complains about gas, double the gasLimit and retry.
-        // This will handle "intrinsic gas too low" errors from L2 sequencers
-        // and related errors we get when testing low gas limits on other networks.
-        // We also have to advance the nonce.
-        tx.gasLimit = (tx.gasLimit as number) * 2;
-        logger.info("sendTxAndWaitForHash(): Retrying with doubled gasLimit");
-        continue;
-      }
+      // Check and handle nonce errors first before any others
+      // since these are due to races with other txs and take the longest to handle.
       if (isNonceError(error)) {
         if (initialSend) {
           // If the error complains about nonce, attempt to update nonce.
@@ -108,6 +165,9 @@ async function sendTxAndWaitForHash(
           // be submitting new transactions instead of speeding up the old ones.
           // Note that we need to update the nonce in the tx object
           // such that it is updated for the caller.
+          // We need to wait before retrying to ensure the prior tx(s) completed.
+          // We need to wait before getting a new nonce and retrying to use the latest nonce.
+          await waitForSendTxRetry(attempt, logger);
           tx.nonce = await getNonce(signer);
           logger.info(
             `sendTxAndWaitForHash(): Retrying with nonce = ${tx.nonce}`,
@@ -120,6 +180,16 @@ async function sendTxAndWaitForHash(
           // check for tx completion for the prior txs.
           throw error;
         }
+      }
+      if (isGasError(error)) {
+        // If the error complains about gas, increase the gas limit and retry.
+        // We do not need to wait before retrying since only the gas limit is updated
+        // and there is no evidence we are racing with other txs.
+        await increaseGasLimit(tx, signer);
+        logger.info(
+          `sendTxAndWaitForHash(): Retrying with increased gasLimit = ${tx.gasLimit}`,
+        );
+        continue;
       }
     }
   }
@@ -217,6 +287,17 @@ async function getCompletedTxReceipt(
   return null;
 }
 
+async function waitForTxCompletionCheck(
+  numGasPriceEscalations: number,
+): Promise<void> {
+  // Increase the interval between checks to back off on heavy load.
+  const txCompletionCheckTimeout =
+    numGasPriceEscalations * txSettings.txCompletionCheckInterval +
+    Math.random() * txSettings.txCompletionCheckRndInterval;
+  await new Promise((resolve) => setTimeout(resolve, txCompletionCheckTimeout));
+  return;
+}
+
 /**
  * Sends an Ethereum transaction with escalation logic to increase gas price if needed.
  *
@@ -300,19 +381,10 @@ export async function escalatedSendTransaction(
   // we will escalate the gas price.
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
-  // The interval for polling for tx completion.
-  let txCompletionCheckTimeout = 0;
 
   // If the tx does not complete, escalate the gas price and resend.
-  while (numGasPriceEscalations < txSettings.maxGasPriceEscalations) {
-    // Wait for the interval before checking transaction status.
-    // Increase the interval between checks to back off on heavy load.
-    txCompletionCheckTimeout +=
-      txSettings.txCompletionCheckInterval +
-      Math.random() * txSettings.txCompletionCheckRndInterval;
-    await new Promise((resolve) =>
-      setTimeout(resolve, txCompletionCheckTimeout),
-    );
+  while (numGasPriceEscalations++ < txSettings.maxGasPriceEscalations - 1) {
+    await waitForTxCompletionCheck(numGasPriceEscalations);
 
     // Check the status of all transactions.
     const receipt = await getCompletedTxReceipt(web3, txHashes, logger);
@@ -329,7 +401,6 @@ export async function escalatedSendTransaction(
     // increase the gas price and resend.
     if (Date.now() > nextGasPriceEscalationTime) {
       // Record escalation and set the next escalation time.
-      numGasPriceEscalations++;
       logger.info(
         `escalatedSendTransaction(): numGasPriceEscalations = ${numGasPriceEscalations} ` +
           `of ${txSettings.maxGasPriceEscalations}`,

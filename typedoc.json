@@ -1,5 +1,5 @@
 {
-    "outputFileStrategy": "modules",
-    "modulesFileName": "index.md",
-    "mergeReadme": true
+  "outputFileStrategy": "modules",
+  "modulesFileName": "index.md",
+  "mergeReadme": true
 }
