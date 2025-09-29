@@ -169,6 +169,16 @@ async function sendTxAndWaitForHash(
           // We need to wait before getting a new nonce and retrying to use the latest nonce.
           await waitForSendTxRetry(attempt, logger);
           tx.nonce = await getNonce(signer);
+          // We've hit a bug where the node keeps returning the same nonce
+          // even though it is stale. This shows up in the logs as follows:
+          // [09:47:49.622] ERROR (29): sendTxAndWaitForHash(): error = Error: replacement fee too low
+          // [09:47:49.317] INFO (29): sendTxAndWaitForHash(): attempt = 4 of 10
+          // [09:47:49.317] INFO (29): sendTxAndWaitForHash(): Retrying with nonce = 25571
+          // TODO: Work around the above bug by checking if tx.nonce is unchanged from the prior (failed) call.
+          // If it is unchanged, we should forcebly increment the nonce.
+          if (tx.nonce === (await getNonce(signer))) {
+            throw new Error("sendTxAndWaitForHash(): nonce has not changed");
+          }
           logger.info(
             `sendTxAndWaitForHash(): Retrying with nonce = ${tx.nonce}`,
           );
