@@ -22,10 +22,6 @@ jobs:
         run: |
           npx typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs
 
-      - name: Copy LICENSE to docs
-        run: |
-          cp LICENSE.txt _docs/_media/
-
       - name: Publish Documents
         uses: validityBase/docs/publish-docs-action@main
         with:
