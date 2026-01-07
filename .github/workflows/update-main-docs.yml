@@ -24,7 +24,7 @@ jobs:
 
       - name: Copy LICENSE to docs
         run: |
-          cp LICENSE.txt _docs/
+          cp LICENSE.txt _docs/_media/
 
       - name: Publish Documents
         uses: validityBase/docs/publish-docs-action@main
