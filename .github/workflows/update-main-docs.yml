@@ -6,17 +6,20 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   update-main-docs:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install dependencies
-        run: |
-          npm install
+        uses: ./.github/actions/setup-node-deps
 
       - name: Build Markdown docs
         run: |
@@ -26,4 +29,4 @@ jobs:
         uses: validityBase/docs/publish-docs-action@main
         with:
           docs-repo-access-token: ${{ secrets.DOCS_REPO_ACCESS_TOKEN }}
-          source-docs-path: '_docs'
+          source-docs-path: "_docs"
