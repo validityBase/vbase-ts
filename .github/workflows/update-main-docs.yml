@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
 
       - name: Install dependencies
         uses: ./.github/actions/setup-node-deps
@@ -26,7 +26,7 @@ jobs:
           npx typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs
 
       - name: Publish Documents
-        uses: validityBase/docs/publish-docs-action@main
+        uses: validityBase/docs/publish-docs-action@7ff5d27a96d8c6802d1f19c6897068238d1c5691
         with:
           docs-repo-access-token: ${{ secrets.DOCS_REPO_ACCESS_TOKEN }}
           source-docs-path: "_docs"
