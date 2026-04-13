@@ -6,24 +6,27 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   update-main-docs:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
 
       - name: Install dependencies
-        run: |
-          npm install
+        uses: ./.github/actions/setup-node-deps
 
       - name: Build Markdown docs
         run: |
           npx typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs
 
       - name: Publish Documents
-        uses: validityBase/docs/publish-docs-action@main
+        uses: validityBase/docs/publish-docs-action@7ff5d27a96d8c6802d1f19c6897068238d1c5691
         with:
           docs-repo-access-token: ${{ secrets.DOCS_REPO_ACCESS_TOKEN }}
-          source-docs-path: '_docs'
+          source-docs-path: "_docs"
