@@ -11,7 +11,7 @@
 ### `.github/workflows/test-localhost.yml`
 - Runs on pull requests and pushes to `main` and `dev`.
 - Checks out the repository with the pinned `actions/checkout` action.
-- Installs Node.js dependencies through `setup-node-deps@v1` with Node.js 18.
+- Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 18.
 - Logs in to GHCR with `GHCR_PAT`, then runs `ghcr.io/validitybase/commitment-service-localhost:latest`.
 - Runs `npm run test:spec:localhost`.
 - Removes the commitment service container with `if: always()`.
@@ -19,7 +19,7 @@
 ### `.github/workflows/update-main-docs.yml`
 - Runs on pushes to `main` and manual dispatch.
 - Checks out the repository with the pinned `actions/checkout` action.
-- Installs Node.js dependencies through `setup-node-deps@v1` with Node.js 18.
+- Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 18.
 - Builds Markdown docs with TypeDoc into `_docs`.
 - Publishes `_docs` with `validityBase/vbase-github-actions/.github/actions/publish-docs@v1`.
 - Publishes to the `main` branch of the central docs repository.
