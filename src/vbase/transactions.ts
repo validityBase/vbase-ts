@@ -501,7 +501,7 @@ export async function getCompletedTxReceipt(
 
     // Check if any of the previously sent transactions has been confirmed.
     // Keep the raw receipt so we can evaluate its status correctly; serialize
-    // only for logging and for the returned value.
+    // only for logging.
     let receipt: null | TransactionReceipt = null;
     try {
       receipt = await web3.eth.getTransactionReceipt(txHash);
@@ -515,11 +515,10 @@ export async function getCompletedTxReceipt(
     );
     if (receipt && isReceiptSuccessful(receipt)) {
       // Transaction is confirmed and successful, return the receipt.
-      const serializedReceipt = serializeBigInts(receipt);
       logger.debug(
-        `< getCompletedTxReceipt(): receipt = ${JSON.stringify(serializedReceipt)}`,
+        `< getCompletedTxReceipt(): receipt = ${JSON.stringify(serializeBigInts(receipt))}`,
       );
-      return serializedReceipt;
+      return receipt;
     }
     if (receipt && isReceiptReverted(receipt)) {
       // The transaction was mined but reverted. This is terminal: a reverted tx
