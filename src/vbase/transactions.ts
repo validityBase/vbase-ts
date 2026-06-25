@@ -386,7 +386,7 @@ export async function sendTxAndWaitForHash(
     }
   }
 
-  const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${txSettings.nSendTxRetries} retries`;
+  const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${totalAttempts} attempts (${txSettings.nSendTxRetries} retry budget)`;
   logger.error(error_msg);
   throw new Error(error_msg);
 }
