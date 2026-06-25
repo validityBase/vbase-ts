@@ -213,23 +213,30 @@ export async function sendTxAndWaitForHash(
   logger: pino.Logger,
 ): Promise<string> {
   logger.debug("> sendTxAndWaitForHash()");
-  let attempt = 0;
+  // totalAttempts: monotonically increasing count of all send attempts,
+  // including productive fee bumps; used for logging and backoff.
+  // budgetAttempts: counts attempts against nSendTxRetries; productive fee
+  // bumps (where the gas price actually rises) do not consume budget.
+  let totalAttempts = 0;
+  let budgetAttempts = 0;
   // Counts consecutive "replacement underpriced" errors seen on the initial
   // send while the confirmed nonce stays UNCHANGED. Used to distinguish a
   // genuinely stuck same-nonce tx (nonce frozen across several checks) from a
   // healthy, merely pending tx (the nonce advances as it mines). Reset whenever
-  // the nonce advances. See nStuckTxConfirmations for the rationale.
+  // the nonce advances or a non-replacement-underpriced error is seen.
+  // See nStuckTxConfirmations for the rationale.
   let stuckNonceChecks = 0;
 
   verifyTx(signer, tx);
 
   // Retry on errors.
-  // The post-increment runs the body for attempt = 1..nSendTxRetries,
-  // i.e. exactly nSendTxRetries attempts.
-  while (attempt++ < txSettings.nSendTxRetries) {
+  // budgetAttempts is charged for each attempt; productive fee bumps do not
+  // count against the budget (budgetAttempts is decremented on each bump).
+  while (budgetAttempts++ < txSettings.nSendTxRetries) {
+    totalAttempts++;
     try {
       logger.info(
-        `sendTxAndWaitForHash(): attempt = ${attempt} of ${txSettings.nSendTxRetries}`,
+        `sendTxAndWaitForHash(): attempt = ${totalAttempts} of ${txSettings.nSendTxRetries}`,
       );
       logger.info(
         `sendTxAndWaitForHash(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
@@ -293,7 +300,7 @@ export async function sendTxAndWaitForHash(
             // advanced. Move to the new nonce without bumping, after waiting for
             // sibling txs to make progress. Reset the stuck detector.
             stuckNonceChecks = 0;
-            await waitForSendTxRetry(attempt, logger);
+            await waitForSendTxRetry(totalAttempts, logger);
             logger.info(
               "sendTxAndWaitForHash(): replacement underpriced; nonce " +
                 `advanced, retrying with nonce = ${tx.nonce}`,
@@ -304,7 +311,7 @@ export async function sendTxAndWaitForHash(
           // genuinely stuck tx (case 3). Wait and re-check before replacing, so
           // a healthy pending tx has time to mine and we do not evict it.
           if (++stuckNonceChecks < txSettings.nStuckTxConfirmations) {
-            await waitForSendTxRetry(attempt, logger);
+            await waitForSendTxRetry(totalAttempts, logger);
             logger.info(
               "sendTxAndWaitForHash(): replacement underpriced; nonce " +
                 `unchanged (${stuckNonceChecks}/${txSettings.nStuckTxConfirmations}), ` +
@@ -323,7 +330,7 @@ export async function sendTxAndWaitForHash(
           // Productive bump (still below the safety cap): do not let the climb
           // be cut short by the retry budget. Once the fee reaches the cap the
           // bump is no longer productive and the budget applies as usual.
-          attempt--;
+          budgetAttempts--;
           // Brief, non-growing wait so the climb does not hammer the node.
           await waitForSendTxRetry(1, logger);
         }
@@ -349,7 +356,8 @@ export async function sendTxAndWaitForHash(
           // such that it is updated for the caller.
           // We need to wait before retrying to ensure the prior tx(s) completed.
           // We need to wait before getting a new nonce and retrying to use the latest nonce.
-          await waitForSendTxRetry(attempt, logger);
+          stuckNonceChecks = 0;
+          await waitForSendTxRetry(totalAttempts, logger);
           tx.nonce = await getNonce(signer);
           logger.info(
             `sendTxAndWaitForHash(): Retrying with nonce = ${tx.nonce}`,
@@ -367,6 +375,7 @@ export async function sendTxAndWaitForHash(
         // If the error complains about gas, increase the gas limit and retry.
         // We do not need to wait before retrying since only the gas limit is updated
         // and there is no evidence we are racing with other txs.
+        stuckNonceChecks = 0;
         await increaseGasLimit(tx, signer);
         logger.info(
           `sendTxAndWaitForHash(): Retrying with increased gasLimit = ${tx.gasLimit}`,

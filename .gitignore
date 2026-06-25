@@ -20,3 +20,10 @@ artifacts
 # Config
 .env*
 /_docs
+
+# Claude Code local settings
+.claude/settings.json
+.claude/settings.local.json
+
+# Codex local settings
+.codex
