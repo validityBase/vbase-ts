@@ -431,7 +431,8 @@ function estimateGasLimit(data: string, logger: pino.Logger): number {
 // The precision for multiplying BigInt by a float.
 const BIG_INT_FLOAT_MUL_PRECISION = 1000;
 
-function mulGasPriceByFactor(gasPrice: bigint, factor: number): bigint {
+// Exported for unit testing.
+export function mulGasPriceByFactor(gasPrice: bigint, factor: number): bigint {
   // Use fixed point arithmetic to multiply BigInt by a float.
   return (
     (gasPrice * BigInt(Math.round(factor * BIG_INT_FLOAT_MUL_PRECISION))) /

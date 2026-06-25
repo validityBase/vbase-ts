@@ -16,6 +16,7 @@ import {
   isReceiptSuccessful,
   isReceiptReverted,
   capGasPrice,
+  mulGasPriceByFactor,
   getCompletedTxReceipt,
 } from "../src/vbase/transactions";
 import txSettings from "../src/vbase/txSettings";
@@ -556,7 +557,7 @@ describe("Transaction helpers", () => {
       // Same nonce, fee bumped by the escalation factor.
       expect(tx.nonce).to.equal(5);
       expect(tx.gasPrice).to.equal(
-        1000n * BigInt(txSettings.gasPriceEscalationFactor),
+        mulGasPriceByFactor(1000n, txSettings.gasPriceEscalationFactor),
       );
     });
 
@@ -669,7 +670,7 @@ describe("Transaction helpers", () => {
       expect(sentGasPrices.slice(0, 3)).to.deep.equal([1000n, 1000n, 1000n]);
       expect(tx.nonce).to.equal(5);
       expect(tx.gasPrice).to.equal(
-        1000n * BigInt(txSettings.gasPriceEscalationFactor),
+        mulGasPriceByFactor(1000n, txSettings.gasPriceEscalationFactor),
       );
     });
 
@@ -766,7 +767,7 @@ describe("Transaction helpers", () => {
       expect(hash).to.equal("0xbumped");
       expect(tx.nonce).to.equal(5);
       expect(tx.gasPrice).to.equal(
-        1000n * BigInt(txSettings.gasPriceEscalationFactor),
+        mulGasPriceByFactor(1000n, txSettings.gasPriceEscalationFactor),
       );
     });
   });
