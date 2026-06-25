@@ -120,9 +120,9 @@ const txSettings = {
    * "replacement underpriced") AND the worst-case spend per transaction.
    *
    * Worst-case spend per accepted tx is approximately maxGasPrice * gasLimit.
-   * At the default (10,000 gwei) and a 3,000,000 gas limit this is ~0.03 native
-   * tokens-times-1e18 wei = ~30 native tokens, versus ~3,000 at the old 1e15
-   * backstop. Raise it for chains/conditions with higher legitimate fees.
+   * At the default (10,000 gwei) and a 3,000,000 gas limit this is 3e19 wei
+   * (~30 native tokens), versus ~3,000 at the old 1e15 backstop. Raise it for
+   * chains/conditions with higher legitimate fees.
    *
    * Note: once the gas price is clamped at this cap, further fee bumps can no
    * longer satisfy a node's replacement price bump, so a replacement may stop
