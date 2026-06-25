@@ -221,19 +221,26 @@ describe("Transactions", () => {
       await commitmentService.verifyUserSets(ethersWallet.address, TEST_HASH1),
     ).to.equal(true);
     // Fail due to a gas limit that is too low to ever execute the tx.
-    // The send-retry path doubles the gas limit on each gas error, so the
-    // starting value must stay below the ~21344 intrinsic-gas floor even after
-    // all nSendTxRetries doublings (20 * 2^(nSendTxRetries-1) = 10240 < 21344).
-    // This keeps the tx failing the intrinsic-gas check on every attempt so it
-    // never executes and the call exhausts its retries.
+    // Pin nSendTxRetries so the starting gas limit is reliably below the
+    // ~21344 intrinsic-gas floor even after all doublings:
+    //   20 * 2^(10-1) = 10240 < 21344.
+    // Without pinning, an env-var override of nSendTxRetries >= 12 would let
+    // the doubled gas limit exceed the floor, causing the tx to succeed and
+    // the test to fail non-deterministically.
+    const savedNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 10;
     data = encodeFunctionCall(web3, "addSetObject", [
       TEST_HASH1,
       TEST_HASH2,
     ]).toString();
-    await expect(escalatedSendTransactionWorker(data, 20)).to.be.rejectedWith(
-      Error,
-      /Failed to send transaction after/,
-    );
+    try {
+      await expect(escalatedSendTransactionWorker(data, 20)).to.be.rejectedWith(
+        Error,
+        /Failed to send transaction after/,
+      );
+    } finally {
+      txSettings.nSendTxRetries = savedNSendTxRetries;
+    }
   });
 
   it("Succeeds via escalatedSendTransaction after gas escalation", async () => {
@@ -503,6 +510,8 @@ describe("Transaction helpers", () => {
     }
 
     const defaultNStuckTxConfirmations = txSettings.nStuckTxConfirmations;
+    const defaultWaitForSendTxRetryInterval =
+      txSettings.waitForSendTxRetryInterval;
 
     beforeEach(() => {
       // Keep the inter-retry wait short so these tests run fast.
@@ -516,6 +525,7 @@ describe("Transaction helpers", () => {
 
     afterEach(() => {
       txSettings.nStuckTxConfirmations = defaultNStuckTxConfirmations;
+      txSettings.waitForSendTxRetryInterval = defaultWaitForSendTxRetryInterval;
     });
 
     it("replaces a stuck own tx by bumping the gas price at the same nonce", async () => {

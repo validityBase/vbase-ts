@@ -27,7 +27,11 @@ import { serializeBigInts } from "./utils";
  *                                   resend; on an escalated send rethrow so the
  *                                   outer layer can check for prior completion;
  *      - gas (limit) errors      -> increase the gas limit and resend.
- *    It gives up after nSendTxRetries attempts.
+ *    It gives up after nSendTxRetries attempts for most errors; productive
+ *    "replacement underpriced" fee bumps (where the gas price actually
+ *    increases, i.e. still below the maxGasPrice cap) do not count against
+ *    this limit so that a climb above a highly-escalated stuck tx is not cut
+ *    short by the retry budget.
  *
  * The nonce is fetched from the chain (last confirmed nonce) and deliberately
  * reused across escalations so that escalated sends replace the in-flight
