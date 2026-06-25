@@ -236,7 +236,7 @@ export async function sendTxAndWaitForHash(
     totalAttempts++;
     try {
       logger.info(
-        `sendTxAndWaitForHash(): attempt = ${totalAttempts} of ${txSettings.nSendTxRetries}`,
+        `sendTxAndWaitForHash(): attempt = ${totalAttempts} (budget ${budgetAttempts}/${txSettings.nSendTxRetries})`,
       );
       logger.info(
         `sendTxAndWaitForHash(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
@@ -340,6 +340,9 @@ export async function sendTxAndWaitForHash(
         );
         continue;
       }
+      // Any error that is not "replacement underpriced" breaks the consecutive
+      // run: reset so the counter only reflects uninterrupted observations.
+      stuckNonceChecks = 0;
       // Check and handle nonce errors before gas errors
       // since these are due to races with other txs and take the longest to handle.
       if (isNonceError(error)) {
@@ -356,7 +359,6 @@ export async function sendTxAndWaitForHash(
           // such that it is updated for the caller.
           // We need to wait before retrying to ensure the prior tx(s) completed.
           // We need to wait before getting a new nonce and retrying to use the latest nonce.
-          stuckNonceChecks = 0;
           await waitForSendTxRetry(totalAttempts, logger);
           tx.nonce = await getNonce(signer);
           logger.info(
@@ -375,7 +377,6 @@ export async function sendTxAndWaitForHash(
         // If the error complains about gas, increase the gas limit and retry.
         // We do not need to wait before retrying since only the gas limit is updated
         // and there is no evidence we are racing with other txs.
-        stuckNonceChecks = 0;
         await increaseGasLimit(tx, signer);
         logger.info(
           `sendTxAndWaitForHash(): Retrying with increased gasLimit = ${tx.gasLimit}`,
