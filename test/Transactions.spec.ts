@@ -793,9 +793,7 @@ describe("Transaction helpers", () => {
       const receipt = await getCompletedTxReceipt(web3, [TEST_HASH1], LOGGER);
 
       expect(receipt).to.not.equal(null);
-      // serializeBigInts() turns the 1n status into the string "1n" on the
-      // returned value (the success check ran on the raw bigint beforehand).
-      expect(receipt!.status).to.equal("1n");
+      expect(receipt!.status).to.equal(1n);
     });
 
     it("fails fast (throws) when a tracked tx mined but reverted", async () => {
