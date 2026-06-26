@@ -131,10 +131,9 @@ describe("Transactions", () => {
     // We can't perform strict accounting since the timeouts,
     // block times, and gas escalation intervals are approximate.
     const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
-    // receipt.effectiveGasPrice.slice(0, -1) removes the last "n" character.
     // Add 1 to the effective gas price to account for rounding errors.
     expect(
-      Number(effectiveGasPrice.slice(0, -1) + 1) / initialGasPrice,
+      (Number(effectiveGasPrice) + 1) / initialGasPrice,
     ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
 
     // Check the user sets.
@@ -176,7 +175,7 @@ describe("Transactions", () => {
     receipts.forEach((receipt) => {
       const effectiveGasPrice = receipt?.effectiveGasPrice?.toString() ?? "";
       expect(
-        Number(effectiveGasPrice.slice(0, -1) + 1) / initialGasPrice,
+        (Number(effectiveGasPrice) + 1) / initialGasPrice,
       ).to.be.greaterThanOrEqual(txSettings.gasPriceEscalationFactor);
     });
 
@@ -262,8 +261,7 @@ describe("Transactions", () => {
     );
     // Verify that the transaction has completed at a higher gas limit
     // following doublings.
-    // gasUsed is number represented as a string with a trailing "n".
-    const gasUsed = Number(String(receipt.gasUsed).slice(0, -1));
+    const gasUsed = Number(String(receipt.gasUsed));
     expect(gasUsed).to.be.greaterThan(44000);
     expect(gasUsed).to.be.lessThan(88000);
   });

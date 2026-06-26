@@ -632,9 +632,9 @@ export async function escalatedSendTransaction(
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
 
-  // If the tx does not complete, escalate the gas price and resend.
-  // The post-increment runs the body for numGasPriceEscalations =
-  // 1..maxGasPriceEscalations, i.e. exactly maxGasPriceEscalations attempts.
+  // After the initial send, poll for completion up to maxGasPriceEscalations times.
+  // Each iteration escalates the gas price and re-sends if the escalation timeout has passed.
+  // The post-increment runs the body for numGasPriceEscalations = 1..maxGasPriceEscalations.
   while (numGasPriceEscalations++ < txSettings.maxGasPriceEscalations) {
     await waitForTxCompletionCheck(numGasPriceEscalations);
 
@@ -705,7 +705,7 @@ export async function escalatedSendTransaction(
     }
   }
 
-  const error_msg = `Transaction was not confirmed after ${txSettings.maxGasPriceEscalations} attempts.`;
+  const error_msg = `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`;
   logger.error(error_msg);
   throw new Error(error_msg);
 }
