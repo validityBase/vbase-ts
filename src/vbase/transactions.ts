@@ -103,7 +103,7 @@ async function waitForSendTxRetry(
 export function isNonceError(error: any): boolean {
   // All errors that mention "nonce" in the message are nonce errors.
   return (
-    typeof error.message === "string" &&
+    typeof error?.message === "string" &&
     error.message.toLowerCase().includes("nonce")
   );
 }
@@ -142,7 +142,7 @@ export function isReplacementUnderpricedError(error: any): boolean {
   if (error?.code === "REPLACEMENT_UNDERPRICED") {
     return true;
   }
-  if (typeof error.message !== "string") {
+  if (typeof error?.message !== "string") {
     return false;
   }
   return (
@@ -158,7 +158,7 @@ export function isReplacementUnderpricedError(error: any): boolean {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isGasError(error: any): boolean {
   return (
-    typeof error.message === "string" &&
+    typeof error?.message === "string" &&
     error.message.toLowerCase().includes("gas")
   );
 }
