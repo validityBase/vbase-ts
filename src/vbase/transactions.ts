@@ -6,6 +6,38 @@ import { TransactionReceipt } from "web3-types";
 import txSettings from "./txSettings";
 import { serializeBigInts } from "./utils";
 
+/**
+ * Transaction submission is organized into two nested layers:
+ *
+ * 1. Outer layer — escalatedSendTransaction():
+ *    Builds a single transaction with a fixed nonce and an initial gas price,
+ *    submits it, then polls for completion. While the transaction is not
+ *    confirmed it periodically escalates the gas price and resends the SAME
+ *    nonce (a replacement), backing off the polling/escalation intervals under
+ *    load. Because any of the previously broadcast replacements may be the one
+ *    that ultimately gets mined, it tracks every submitted hash and checks all
+ *    of them for a receipt. It gives up after maxGasPriceEscalations attempts.
+ *
+ * 2. Inner layer — sendTxAndWaitForHash():
+ *    Performs a single logical submission (initial or escalated) of the
+ *    transaction object and returns its hash, retrying transient submission
+ *    errors in place:
+ *      - replacement underpriced -> bump gas price, keep the same nonce, resend;
+ *      - nonce errors            -> on the initial send refetch the nonce and
+ *                                   resend; on an escalated send rethrow so the
+ *                                   outer layer can check for prior completion;
+ *      - gas (limit) errors      -> increase the gas limit and resend.
+ *    It gives up after nSendTxRetries attempts for most errors; productive
+ *    "replacement underpriced" fee bumps (where the gas price actually
+ *    increases, i.e. still below the maxGasPrice cap) do not count against
+ *    this limit so that a climb above a highly-escalated stuck tx is not cut
+ *    short by the retry budget.
+ *
+ * The nonce is fetched from the chain (last confirmed nonce) and deliberately
+ * reused across escalations so that escalated sends replace the in-flight
+ * transaction rather than creating new ones.
+ */
+
 function verifyTx(signer: Signer, tx: TransactionRequest): void {
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
@@ -58,25 +90,77 @@ async function waitForSendTxRetry(
 }
 
 // Check if the error is a nonce error.
-// We will process specific errors in the catch block by parsing their messages.
+// We classify errors in the catch block by parsing their messages, matching
+// case-insensitively since the wording/capitalization varies across nodes
+// (e.g. "nonce too low" vs "Nonce too low").
+// Note: "replacement underpriced" errors are intentionally NOT treated as nonce
+// errors. They look nonce-related (same-nonce collision) and their messages
+// often even mention the nonce, but the correct remedy is to raise the gas
+// price, not to change the nonce. They are detected separately by
+// isReplacementUnderpricedError() below, which must therefore be checked first.
+// Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isNonceError(error: any): boolean {
+export function isNonceError(error: any): boolean {
+  // All errors that mention "nonce" in the message are nonce errors.
   return (
-    typeof error.message === "string" &&
-    // All error that include "nonce" in the message are nonce errors.
-    (error.message.includes("nonce") ||
-      // Errors that include "replacement fee too low" in the message are also nonce errors.
-      // This happens when there is a nonce collision with another tx
-      // and the node thinks we are submitting a replacement tx instead of a new one.
-      error.message.includes("replacement fee too low"))
+    typeof error?.message === "string" &&
+    error.message.toLowerCase().includes("nonce")
+  );
+}
+
+// Check if the error is a "replacement transaction underpriced" error.
+//
+// This occurs when a transaction with the same nonce is already in the node's
+// mempool (often our own prior, still-pending submission) and our new same-nonce
+// transaction does not raise the fee by the node's required price bump
+// (Polygon Bor's default is 10%, applied to BOTH maxFeePerGas and
+// maxPriorityFeePerGas). It is NOT a nonce problem: getTransactionCount() keeps
+// reporting this nonce as next-valid because the pending tx is unconfirmed, so
+// refetching the nonce does not help and incrementing it would only queue an
+// unexecutable tx behind the stuck one. The correct remedy is to bump the gas
+// price and resend with the SAME nonce to replace the stuck transaction.
+//
+// Detection primarily uses the ethers error code, which ethers sets for this
+// condition regardless of the underlying node's wording (e.g. ethers'
+// "replacement fee too low" and geth/Bor's "replacement transaction
+// underpriced" both surface as code REPLACEMENT_UNDERPRICED). This is the path
+// taken in production. As a fallback we also match the canonical lowercase
+// messages for nodes/providers that do not set the code.
+//
+// We deliberately do NOT match case-insensitively. These messages frequently
+// also mention the nonce, and some providers (notably Hardhat) emit a
+// capitalized, generic "Replacement transaction underpriced ..." message
+// WITHOUT setting the ethers code. Broad case-insensitive matching would pull
+// such generic errors -- and genuine nonce-collision errors -- into this
+// gas-price-bump path, disrupting the nonce-based coordination between
+// concurrent same-account sends (which is resolved on the nonce path by moving
+// to the freed nonce). Production correctness relies on the ethers code; the
+// bump/replace logic is covered by deterministic unit tests. Exported for unit
+// testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isReplacementUnderpricedError(error: any): boolean {
+  if (error?.code === "REPLACEMENT_UNDERPRICED") {
+    return true;
+  }
+  if (typeof error?.message !== "string") {
+    return false;
+  }
+  return (
+    error.message.includes("replacement transaction underpriced") ||
+    error.message.includes("replacement fee too low") ||
+    error.message.includes("replacement underpriced")
   );
 }
 
 // Check if the error is a low gas error.
-// We will process specific errors in the catch block by parsing their messages.
+// We classify errors in the catch block by parsing their messages, matching
+// case-insensitively. Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isGasError(error: any): boolean {
-  return typeof error.message === "string" && error.message.includes("gas");
+export function isGasError(error: any): boolean {
+  return (
+    typeof error?.message === "string" &&
+    error.message.toLowerCase().includes("gas")
+  );
 }
 
 async function increaseGasLimit(
@@ -121,22 +205,38 @@ async function increaseGasLimit(
 increaseGasLimit.blockGasLimit = null as bigint | null;
 increaseGasLimit.lastBlockNumber = null as number | null;
 
-async function sendTxAndWaitForHash(
+// Exported for unit testing.
+export async function sendTxAndWaitForHash(
   signer: Signer,
   tx: TransactionRequest,
   initialSend: boolean,
   logger: pino.Logger,
 ): Promise<string> {
   logger.debug("> sendTxAndWaitForHash()");
-  let attempt = 0;
+  // totalAttempts: monotonically increasing count of all send attempts,
+  // including productive fee bumps; used for logging and backoff.
+  // budgetAttempts: counts attempts against nSendTxRetries; productive fee
+  // bumps (where the gas price actually rises) do not consume budget.
+  let totalAttempts = 0;
+  let budgetAttempts = 0;
+  // Counts consecutive "replacement underpriced" errors seen on the initial
+  // send while the confirmed nonce stays UNCHANGED. Used to distinguish a
+  // genuinely stuck same-nonce tx (nonce frozen across several checks) from a
+  // healthy, merely pending tx (the nonce advances as it mines). Reset whenever
+  // the nonce advances or a non-replacement-underpriced error is seen.
+  // See nStuckTxConfirmations for the rationale.
+  let stuckNonceChecks = 0;
 
   verifyTx(signer, tx);
 
   // Retry on errors.
-  while (attempt++ < txSettings.nSendTxRetries - 1) {
+  // budgetAttempts is charged for each attempt; productive fee bumps do not
+  // count against the budget (budgetAttempts is decremented on each bump).
+  while (budgetAttempts++ < txSettings.nSendTxRetries) {
+    totalAttempts++;
     try {
       logger.info(
-        `sendTxAndWaitForHash(): attempt = ${attempt} of ${txSettings.nSendTxRetries}`,
+        `sendTxAndWaitForHash(): attempt = ${totalAttempts} (budget ${budgetAttempts}/${txSettings.nSendTxRetries})`,
       );
       logger.info(
         `sendTxAndWaitForHash(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
@@ -151,7 +251,99 @@ async function sendTxAndWaitForHash(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       logger.error(`sendTxAndWaitForHash(): error = ${error}`);
-      // Check and handle nonce errors first before any others
+      // Handle "replacement underpriced" first, before the nonce check, since
+      // these messages often also mention the nonce and would otherwise be
+      // misrouted to the nonce path.
+      //
+      // A transaction with this nonce is already in the node's mempool. On the
+      // initial send this has three possible causes, and we must NOT evict a
+      // healthy transaction, so we disambiguate by refetching the chain nonce:
+      //   1. A concurrent send from this account claimed this nonce and is
+      //      healthy/pending. As it (and prior txs) confirm, the refetched
+      //      confirmed nonce advances. Remedy: move to the new nonce WITHOUT
+      //      bumping the fee, to avoid a replacement-fee war between our own
+      //      concurrent transactions.
+      //   2. A merely pending tx (a sibling, or our own from a prior call) holds
+      //      this nonce but has not mined yet. The confirmed nonce is unchanged,
+      //      but the tx is healthy and will mine shortly. We must NOT replace it.
+      //   3. Our own prior tx is genuinely stuck at this nonce. The confirmed
+      //      nonce never advances (nothing consumes it). Remedy: bump the fee
+      //      above the stuck tx (by the node's price bump: Bor default 10%, on
+      //      both maxFeePerGas and maxPriorityFeePerGas) and resend with the
+      //      SAME nonce to replace it.
+      //
+      // getTransactionCount() returns the CONFIRMED nonce, so an unchanged nonce
+      // cannot by itself tell cases 2 and 3 apart -- both leave it frozen for
+      // now. We therefore only treat the tx as stuck (case 3) after the nonce
+      // stays frozen across nStuckTxConfirmations checks: long enough that a
+      // healthy pending tx (case 2) would have mined and advanced the nonce,
+      // letting us move on without evicting it. NOTE: with truly concurrent
+      // sends from the same account this remains a heuristic; the robust fix is
+      // a single globally synchronized nonce counter (see getNonce()).
+      //
+      // For the genuine stuck case we must be able to climb ABOVE the stuck tx's
+      // fee. That stuck tx may itself have been escalated to a high fee by a
+      // prior escalatedSendTransaction() call, so a fresh climb starting from
+      // the market-based initial fee could otherwise exhaust the retry budget
+      // before overtaking it. We therefore do not count a productive fee bump
+      // (one that actually raised the fee, i.e. we are still below the
+      // maxGasPrice cap) against the retry budget: the climb continues until the
+      // replacement is accepted or we reach the safety cap (which the stuck tx
+      // also could not exceed). We wait briefly between bumps so the climb does
+      // not hammer the node in a tight loop.
+      if (isReplacementUnderpricedError(error)) {
+        if (initialSend) {
+          const previousNonce = tx.nonce;
+          tx.nonce = await getNonce(signer);
+          if (tx.nonce !== previousNonce) {
+            // Case 1: the tx holding this nonce confirmed and the nonce
+            // advanced. Move to the new nonce without bumping, after waiting for
+            // sibling txs to make progress. Reset the stuck detector.
+            stuckNonceChecks = 0;
+            await waitForSendTxRetry(totalAttempts, logger);
+            logger.info(
+              "sendTxAndWaitForHash(): replacement underpriced; nonce " +
+                `advanced, retrying with nonce = ${tx.nonce}`,
+            );
+            continue;
+          }
+          // Nonce unchanged: could be a healthy pending tx (case 2) or a
+          // genuinely stuck tx (case 3). Wait and re-check before replacing, so
+          // a healthy pending tx has time to mine and we do not evict it.
+          if (++stuckNonceChecks < txSettings.nStuckTxConfirmations) {
+            await waitForSendTxRetry(totalAttempts, logger);
+            logger.info(
+              "sendTxAndWaitForHash(): replacement underpriced; nonce " +
+                `unchanged (${stuckNonceChecks}/${txSettings.nStuckTxConfirmations}), ` +
+                "waiting to confirm the tx is stuck before replacing it",
+            );
+            continue;
+          }
+          // Nonce frozen across nStuckTxConfirmations checks: treat as stuck
+          // (case 3) and fall through to replace it by bumping the fee.
+        }
+        // Genuine stuck tx (initial send) or a deliberate replacement of our own
+        // in-flight tx (escalated send): bump the fee to climb above it.
+        const gasPriceBeforeBump = BigInt(tx.gasPrice!.toString());
+        increaseGasPrice(tx, txSettings.gasPriceEscalationFactor);
+        if (BigInt(tx.gasPrice!.toString()) > gasPriceBeforeBump) {
+          // Productive bump (still below the safety cap): do not let the climb
+          // be cut short by the retry budget. Once the fee reaches the cap the
+          // bump is no longer productive and the budget applies as usual.
+          budgetAttempts--;
+          // Brief, non-growing wait so the climb does not hammer the node.
+          await waitForSendTxRetry(1, logger);
+        }
+        logger.info(
+          "sendTxAndWaitForHash(): replacement underpriced; bumping gasPrice " +
+            `= ${tx.gasPrice} to replace stuck tx at nonce = ${tx.nonce}`,
+        );
+        continue;
+      }
+      // Any error that is not "replacement underpriced" breaks the consecutive
+      // run: reset so the counter only reflects uninterrupted observations.
+      stuckNonceChecks = 0;
+      // Check and handle nonce errors before gas errors
       // since these are due to races with other txs and take the longest to handle.
       if (isNonceError(error)) {
         if (initialSend) {
@@ -167,7 +359,7 @@ async function sendTxAndWaitForHash(
           // such that it is updated for the caller.
           // We need to wait before retrying to ensure the prior tx(s) completed.
           // We need to wait before getting a new nonce and retrying to use the latest nonce.
-          await waitForSendTxRetry(attempt, logger);
+          await waitForSendTxRetry(totalAttempts, logger);
           tx.nonce = await getNonce(signer);
           logger.info(
             `sendTxAndWaitForHash(): Retrying with nonce = ${tx.nonce}`,
@@ -175,7 +367,7 @@ async function sendTxAndWaitForHash(
           continue;
         } else {
           // If the error complains about nonce on escalated sends,
-          // out prior tx must have completed and updated the nonce.
+          // our prior tx must have completed and updated the nonce.
           // Rethrow the error so that the upper layers can
           // check for tx completion for the prior txs.
           throw error;
@@ -194,7 +386,7 @@ async function sendTxAndWaitForHash(
     }
   }
 
-  const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${attempt} retries`;
+  const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${totalAttempts} attempts (${txSettings.nSendTxRetries} retry budget)`;
   logger.error(error_msg);
   throw new Error(error_msg);
 }
@@ -239,7 +431,8 @@ function estimateGasLimit(data: string, logger: pino.Logger): number {
 // The precision for multiplying BigInt by a float.
 const BIG_INT_FLOAT_MUL_PRECISION = 1000;
 
-function mulGasPriceByFactor(gasPrice: bigint, factor: number): bigint {
+// Exported for unit testing.
+export function mulGasPriceByFactor(gasPrice: bigint, factor: number): bigint {
   // Use fixed point arithmetic to multiply BigInt by a float.
   return (
     (gasPrice * BigInt(Math.round(factor * BIG_INT_FLOAT_MUL_PRECISION))) /
@@ -247,7 +440,52 @@ function mulGasPriceByFactor(gasPrice: bigint, factor: number): bigint {
   );
 }
 
-async function getCompletedTxReceipt(
+// Clamp a gas price to the configured safety backstop.
+// This bounds runaway escalation (e.g. caused by a misbehaving node) without
+// interfering with normal operation, since maxGasPrice sits far above any
+// realistic market gas price. Exported for unit testing.
+export function capGasPrice(gasPrice: bigint): bigint {
+  const maxGasPrice = BigInt(txSettings.maxGasPrice);
+  return gasPrice > maxGasPrice ? maxGasPrice : gasPrice;
+}
+
+// Multiply the tx gas price by a factor, clamped to the safety backstop.
+// Mutates the tx in place so the updated gas price is visible to the caller and
+// carried into any subsequent escalation.
+function increaseGasPrice(tx: TransactionRequest, factor: number): void {
+  if (tx.gasPrice === undefined || tx.gasPrice === null) {
+    throw new Error("increaseGasPrice(): gasPrice undefined");
+  }
+  tx.gasPrice = capGasPrice(
+    mulGasPriceByFactor(BigInt(tx.gasPrice.toString()), factor),
+  );
+}
+
+// Determine whether a transaction receipt indicates success.
+// web3 represents the status as a bigint (1n = success, 0n = revert), though
+// other providers may use a number, hex string, or decimal string; normalize
+// before comparing. This MUST run on the raw (non-serialized) receipt:
+// serializeBigInts() turns 0n into the string "0n", which is truthy and would
+// otherwise cause reverted transactions to be treated as successful.
+// Exported for unit testing.
+export function isReceiptSuccessful(receipt: TransactionReceipt): boolean {
+  const status = receipt.status;
+  return status === 1 || status === 1n || status === "0x1" || status === "1";
+}
+
+// Determine whether a transaction receipt indicates an on-chain revert.
+// A receipt only exists once the tx is mined, so an explicit failure status
+// means the tx was mined and reverted. We match only explicit failure values
+// (not merely "not successful") so an unexpected/missing status is treated as
+// "unknown" rather than as a revert. Must run on the raw (non-serialized)
+// receipt for the same reason as isReceiptSuccessful(). Exported for testing.
+export function isReceiptReverted(receipt: TransactionReceipt): boolean {
+  const status = receipt.status;
+  return status === 0 || status === 0n || status === "0x0" || status === "0";
+}
+
+// Exported for unit testing.
+export async function getCompletedTxReceipt(
   web3: Web3,
   txHashes: string[],
   logger: pino.Logger,
@@ -262,24 +500,37 @@ async function getCompletedTxReceipt(
     logger.debug(`getCompletedTxReceipt(): txHash = ${txHash}`);
 
     // Check if any of the previously sent transactions has been confirmed.
+    // Keep the raw receipt so we can evaluate its status correctly; serialize
+    // only for logging.
     let receipt: null | TransactionReceipt = null;
     try {
       receipt = await web3.eth.getTransactionReceipt(txHash);
-      receipt = serializeBigInts(receipt);
     } catch (error) {
       logger.error(
         `getCompletedTxReceipt(): getTransactionReceipt(): error = ${JSON.stringify(error)}`,
       );
     }
     logger.debug(
-      `getCompletedTxReceipt(): receipt = ${JSON.stringify(receipt)}`,
+      `getCompletedTxReceipt(): receipt = ${JSON.stringify(serializeBigInts(receipt))}`,
     );
-    if (receipt && receipt.status) {
-      // Transaction is confirmed, return the receipt.
+    if (receipt && isReceiptSuccessful(receipt)) {
+      // Transaction is confirmed and successful, return the receipt.
       logger.debug(
-        `< getCompletedTxReceipt(): receipt = ${JSON.stringify(receipt)}`,
+        `< getCompletedTxReceipt(): receipt = ${JSON.stringify(serializeBigInts(receipt))}`,
       );
       return receipt;
+    }
+    if (receipt && isReceiptReverted(receipt)) {
+      // The transaction was mined but reverted. This is terminal: a reverted tx
+      // consumes its nonce, so no same-nonce replacement can ever succeed, and
+      // escalating/polling further would only end in a generic timeout. Fail
+      // fast with a clear, actionable error instead. (At most one tx per nonce
+      // can be mined, so a reverted tracked tx is the definitive outcome.)
+      const error_msg =
+        "getCompletedTxReceipt(): transaction reverted on-chain " +
+        `(status = ${receipt.status}): txHash = ${txHash}`;
+      logger.error(error_msg);
+      throw new Error(error_msg);
     }
   }
 
@@ -334,10 +585,9 @@ export async function escalatedSendTransaction(
   logger.debug(
     `escalatedSendTransaction(): currentGasPrice = ${currentGasPrice}`,
   );
-  // Add the initial factor to the current gas price.
-  const gasPrice = mulGasPriceByFactor(
-    currentGasPrice,
-    txSettings.gasPriceInitialFactor,
+  // Add the initial factor to the current gas price, clamped to the backstop.
+  const gasPrice = capGasPrice(
+    mulGasPriceByFactor(currentGasPrice, txSettings.gasPriceInitialFactor),
   );
   logger.debug(`escalatedSendTransaction(): Initial gasPrice = ${gasPrice}`);
 
@@ -382,13 +632,16 @@ export async function escalatedSendTransaction(
   let nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
   let numGasPriceEscalations = 0;
 
-  // If the tx does not complete, escalate the gas price and resend.
-  while (numGasPriceEscalations++ < txSettings.maxGasPriceEscalations - 1) {
+  // After the initial send, poll for completion up to maxGasPriceEscalations times.
+  // Each iteration escalates the gas price and re-sends if the escalation timeout has passed.
+  // The post-increment runs the body for numGasPriceEscalations = 1..maxGasPriceEscalations.
+  while (numGasPriceEscalations++ < txSettings.maxGasPriceEscalations) {
     await waitForTxCompletionCheck(numGasPriceEscalations);
 
     // Check the status of all transactions.
+    // getCompletedTxReceipt() returns a receipt only for a successful tx.
     const receipt = await getCompletedTxReceipt(web3, txHashes, logger);
-    if (receipt && receipt.status) {
+    if (receipt) {
       // Transaction is confirmed, return the receipt.
       logger.info(
         `escalatedSendTransaction(): Tx confirmed for numGasPriceEscalations = ${numGasPriceEscalations}`,
@@ -410,11 +663,8 @@ export async function escalatedSendTransaction(
       gasPriceEscalationTimeout += txSettings.gasPriceEscalationInterval;
       nextGasPriceEscalationTime = Date.now() + gasPriceEscalationTimeout;
 
-      // Escalate the gas price.
-      tx.gasPrice = mulGasPriceByFactor(
-        tx.gasPrice,
-        txSettings.gasPriceEscalationFactor,
-      );
+      // Escalate the gas price, clamped to the backstop.
+      increaseGasPrice(tx, txSettings.gasPriceEscalationFactor);
       logger.info(
         `escalatedSendTransaction(): Escalated tx.gasPrice = ${tx.gasPrice}`,
       );
@@ -435,8 +685,9 @@ export async function escalatedSendTransaction(
         // Check for the completion of the prior txs.
         if (isNonceError(error)) {
           // Check if a prior tx has completed.
+          // getCompletedTxReceipt() returns a receipt only for a successful tx.
           const receipt = await getCompletedTxReceipt(web3, txHashes, logger);
-          if (receipt && receipt.status) {
+          if (receipt) {
             // Prior txs have completed, return the receipt.
             logger.info(
               `escalatedSendTransaction(): Tx confirmed for numGasPriceEscalations = ${numGasPriceEscalations}`,
@@ -454,7 +705,7 @@ export async function escalatedSendTransaction(
     }
   }
 
-  const error_msg = `Transaction was not confirmed after ${txSettings.maxGasPriceEscalations} attempts.`;
+  const error_msg = `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`;
   logger.error(error_msg);
   throw new Error(error_msg);
 }
