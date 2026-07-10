@@ -20,7 +20,7 @@
 - Runs on pushes to `main` and manual dispatch.
 - Checks out the repository with the pinned `actions/checkout` action.
 - Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 18.
-- Builds Markdown docs with TypeDoc into `_docs`.
+- Builds Markdown docs into `_docs` with the repository's `npm run docs:build` script.
 - Publishes `_docs` with `validityBase/vbase-github-actions/.github/actions/publish-docs@v1`.
 - Publishes to the `main` branch of the central docs repository.
 - Uses `DOCS_REPO_ACCESS_TOKEN` for the central docs repository.

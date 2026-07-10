@@ -23,8 +23,7 @@ jobs:
           node-version: "18"
 
       - name: Build Markdown docs
-        run: |
-          npx typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs
+        run: npm run docs:build
 
       - name: Publish Documents
         uses: validityBase/vbase-github-actions/.github/actions/publish-docs@v1
