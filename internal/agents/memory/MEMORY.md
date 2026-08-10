@@ -7,4 +7,5 @@
 - CI passes `node-version: "18"` to match `.nvmrc`.
 - Documentation publishing uses `validityBase/vbase-github-actions/.github/actions/publish-docs@v1`.
 - Docs build remains local because it runs TypeDoc with `typedoc-plugin-markdown`.
-- `test-localhost.yml` requires `GHCR_PAT` to pull the localhost commitment service image.
+- `test-localhost.yml` uses the repository `GITHUB_TOKEN` with `packages: read`
+  to pull the localhost commitment service image from GHCR.

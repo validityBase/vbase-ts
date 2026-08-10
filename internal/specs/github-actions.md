@@ -3,7 +3,8 @@
 ## Policy
 - Third-party actions are pinned by full commit SHA for reproducibility.
 - Shared vBase-owned actions use `validityBase/vbase-github-actions` with reviewed release tags such as `@v1`.
-- Workflow permissions are declared explicitly and kept minimal.
+- Workflows default to `permissions: {}`; each job declares only the permissions
+  it requires. GHCR pull/test jobs grant `packages: read`.
 - Secrets must come from GitHub Secrets or deployment configuration, never from committed files or logs.
 
 ## Workflows
@@ -12,7 +13,7 @@
 - Runs on pull requests and pushes to `main` and `dev`.
 - Checks out the repository with the pinned `actions/checkout` action.
 - Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 18.
-- Logs in to GHCR with `GHCR_PAT`, then runs `ghcr.io/validitybase/commitment-service-localhost:latest`.
+- Logs in to GHCR with the workflow `GITHUB_TOKEN`, then runs `ghcr.io/validitybase/commitment-service-localhost:latest`.
 - Runs `npm run test:spec:localhost`.
 - Removes the commitment service container with `if: always()`.
 
