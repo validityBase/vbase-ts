@@ -25,3 +25,15 @@
 - Publishes `_docs` with `validityBase/vbase-github-actions/.github/actions/publish-docs@v1`.
 - Publishes to the `main` branch of the central docs repository.
 - Uses `DOCS_REPO_ACCESS_TOKEN` for the central docs repository.
+
+### `.github/workflows/repo-backup.yml`
+- Runs daily and through manual dispatch to create a full-history git bundle
+  backup.
+- Delegates to `validityBase/vbase-github-actions/.github/workflows/repo-backup.yml@v1`.
+- Uses reviewed moving major tags for validityBase-owned shared workflows so
+  centrally reviewed fixes roll forward without per-repository pin updates.
+- Requires `VBASE_COMMON_REPO_READ_TOKEN` and
+  `VBASE_REPO_BACKUP_SECRETS_TOKEN` GitHub Actions secrets.
+- Reads object storage credentials from the `vbase-repo-backups` Bitwarden
+  project at runtime; bucket lifecycle and restore-test policy live outside
+  this repository.
