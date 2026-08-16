@@ -8,7 +8,7 @@
 - `tsconfig.json` uses `"module": "NodeNext"` to emit ESM-compatible output; `"commonjs"` would produce unloadable `.js` files under `"type": "module"`.
 - All relative imports in `src/` must use explicit `.js` extensions (e.g. `"./txSettings.js"` not `"./txSettings"`) — NodeNext module resolution enforces Node.js ESM rules. Write `.js` even though the source file is `.ts`; tsc resolves it correctly.
 - Test files are exempt: `@nomicfoundation/hardhat-mocha` injects `tsx/esm` as a loader, which is extension-agnostic and handles TypeScript natively.
-- Under Node 22, `ts-node` can load `.ts` via ESM type-stripping that does **not** erase plain `import { SomeType }` from CJS packages. Use `import type { ... }` for type-only symbols (e.g. mockttp interfaces in `test/proxy-stress.ts`), or Node throws `Named export 'X' not found` against CommonJS modules.
+- Under Node 22.18+, `node` can run `.ts` files directly via native type-stripping. That stripping does **not** erase plain `import { SomeType }` from CJS packages. Use `import type { ... }` for type-only symbols (e.g. mockttp interfaces in `test/proxy-stress.ts`), or Node throws `Named export 'X' not found` against CommonJS modules.
 
 ## GitHub Actions
 
