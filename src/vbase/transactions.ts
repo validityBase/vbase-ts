@@ -1,10 +1,11 @@
-import { NonceManager, Signer, TransactionRequest } from "ethers";
+import { NonceManager, type Signer, type TransactionRequest } from "ethers";
 import { pino } from "pino";
 import { Web3 } from "web3";
-import { TransactionReceipt } from "web3-types";
+import type { TransactionReceipt } from "web3-types";
 
-import txSettings from "./txSettings";
-import { serializeBigInts } from "./utils";
+// .js extensions are required by NodeNext module resolution (see tsconfig.json).
+import txSettings from "./txSettings.js";
+import { serializeBigInts } from "./utils.js";
 
 /**
  * Transaction submission is organized into two nested layers:
@@ -38,7 +39,7 @@ import { serializeBigInts } from "./utils";
  * transaction rather than creating new ones.
  */
 
-function verifyTx(signer: Signer, tx: TransactionRequest): void {
+function verifyTx(tx: TransactionRequest): void {
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
   if (!tx.gasLimit) {
@@ -152,6 +153,18 @@ export function isReplacementUnderpricedError(error: any): boolean {
   );
 }
 
+// Check if the error is a transient gas station failure (e.g. the Polygon gas
+// station returning non-JSON). These are external-service failures unrelated to
+// the transaction itself; retry with backoff. Exported for unit testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isGasStationError(error: any): boolean {
+  if (typeof error?.message !== "string") return false;
+  const msg = error.message.toLowerCase();
+  // Match both "gas station" (human-readable) and "gasstation" (as it appears
+  // in the Polygon host gasstation.polygon.technology embedded in ethers errors).
+  return msg.includes("gas station") || msg.includes("gasstation");
+}
+
 // Check if the error is a low gas error.
 // We classify errors in the catch block by parsing their messages, matching
 // case-insensitively. Exported for unit testing.
@@ -227,7 +240,7 @@ export async function sendTxAndWaitForHash(
   // See nStuckTxConfirmations for the rationale.
   let stuckNonceChecks = 0;
 
-  verifyTx(signer, tx);
+  verifyTx(tx);
 
   // Retry on errors.
   // budgetAttempts is charged for each attempt; productive fee bumps do not
@@ -372,6 +385,15 @@ export async function sendTxAndWaitForHash(
           // check for tx completion for the prior txs.
           throw error;
         }
+      }
+      if (isGasStationError(error)) {
+        // The provider's gas station (e.g. gasstation.polygon.technology) returned
+        // invalid JSON. This is a transient external-service failure; wait and retry.
+        await waitForSendTxRetry(totalAttempts, logger);
+        logger.info(
+          "sendTxAndWaitForHash(): gas station error, retrying after backoff",
+        );
+        continue;
       }
       if (isGasError(error)) {
         // If the error complains about gas, increase the gas limit and retry.
@@ -606,6 +628,10 @@ export async function escalatedSendTransaction(
     gasLimit: gasLimit,
     gasPrice: gasPrice,
     nonce: nonce,
+    // Force legacy type so ethers doesn't call the Polygon gas station
+    // (gasstation.polygon.technology/v2) to determine fee mechanism. The gas
+    // station is unreliable and returns non-JSON under load, causing SERVER_ERROR.
+    type: 0,
   };
   logger.debug(
     `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,

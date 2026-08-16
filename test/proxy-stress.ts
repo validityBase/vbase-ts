@@ -1,5 +1,9 @@
-import { getLocal, CompletedRequest } from "mockttp";
-import { PassThroughResponse } from "mockttp/dist/rules/requests/request-handler-definitions";
+import { getLocal } from "mockttp";
+import type { CompletedRequest } from "mockttp";
+import type {
+  CallbackRequestResult,
+  PassThroughResponse,
+} from "mockttp/dist/rules/requests/request-step-definitions";
 
 // The target (proxied) and the proxy ports.
 const TGT_PORT = 8545;
@@ -112,22 +116,26 @@ const FailReqIfNecessary = (request: CompletedRequest) => {
 };
 
 // Function to process requests.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const processRequest = async (request: CompletedRequest): Promise<any> => {
+const processRequest = async (
+  request: CompletedRequest,
+): Promise<CallbackRequestResult> => {
   console.log(`Request: ${JSON.stringify(request)}`);
   printBody(request);
   await addRandomDelay();
   FailReqIfNecessary(request);
-  return request;
+  // Rewrite the URL to forward to the target port.
+  const targetUrl = new URL(request.url);
+  targetUrl.port = String(TGT_PORT);
+  return { url: targetUrl.toString() };
 };
 
 // Function to process responses.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const processResponse = async (response: PassThroughResponse): Promise<any> => {
+const processResponse = async (
+  response: PassThroughResponse,
+): Promise<void> => {
   console.log(`Response: ${JSON.stringify(response)}`);
   printBody(response);
   await addRandomDelay();
-  return response;
 };
 
 // Main proxy setup.
@@ -137,7 +145,7 @@ const proxy = getLocal();
   // Start the proxy on the proxy port.
   await proxy.start(PROXY_PORT);
 
-  proxy.forAnyRequest().thenForwardTo("http://localhost:" + TGT_PORT, {
+  proxy.forAnyRequest().thenPassThrough({
     beforeRequest: processRequest,
     beforeResponse: processResponse,
   });

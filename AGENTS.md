@@ -1,11 +1,14 @@
 # AGENTS.md
 
 ## Setup
+
 - GitHub Actions notes: [internal/specs/github-actions.md](internal/specs/github-actions.md)
 - Persistent agent memory: [internal/agents/memory/](internal/agents/memory/)
 
 ## Workflow
+
 When making TypeScript, docs, test, or CI changes in this repo:
+
 1. Confirm the intended behavior before editing.
 2. Keep changes scoped to the relevant workflow, module, docs, or config.
 3. Update specs or operational docs when CI behavior changes.
@@ -13,6 +16,7 @@ When making TypeScript, docs, test, or CI changes in this repo:
 5. Prepare a PR-ready summary with validation and follow-ups.
 
 ## GitHub Actions
+
 - Pin third-party actions to full commit SHAs.
 - Use shared `validityBase/vbase-github-actions` actions/workflows by reviewed version tags.
 - Keep CI Node.js aligned with `.nvmrc` unless deliberately changing the runtime.

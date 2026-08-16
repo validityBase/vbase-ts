@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         uses: validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1
         with:
-          node-version: "18"
+          node-version: "22.18"
 
       - name: Build Markdown docs
         run: npm run docs:build

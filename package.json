@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,9 +16,9 @@
     "test:spec:localhost": "hardhat --network localhost test test/Transactions.spec.ts",
     "test:stress": "hardhat test test/Transactions.stress.ts",
     "test:stress:proxy": "hardhat --network localhost_proxy test test/Transactions.stress.ts",
-    "start:proxy-stress": "MAX_DELAY_MS=3000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.5 ts-node test/proxy-stress.ts",
-    "start:proxy-stress:long-delay": "MAX_DELAY_MS=5000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.1 ts-node test/proxy-stress.ts",
-    "start:proxy-stress:high-failure": "MAX_DELAY_MS=1000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.9 ts-node test/proxy-stress.ts",
+    "start:proxy-stress": "MAX_DELAY_MS=3000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.5 node test/proxy-stress.ts",
+    "start:proxy-stress:long-delay": "MAX_DELAY_MS=5000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.1 node test/proxy-stress.ts",
+    "start:proxy-stress:high-failure": "MAX_DELAY_MS=1000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.9 node test/proxy-stress.ts",
     "format:check": "prettier --check '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "format:write": "prettier --write '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "lint:check": "eslint 'src/**/*.{js,jsx,ts,tsx}' 'test/**/*.{js,jsx,ts,tsx}' '*.{js,ts}'",
@@ -26,23 +26,34 @@
   },
   "dependencies": {
     "dotenv": "16.4.7",
-    "ethers": "6.13.5",
+    "ethers": "6.17.0",
     "pino": "9.6.0",
     "pino-pretty": "11.3.0",
     "ts-node": "10.9.2",
     "typescript": "5.7.3",
     "web3": "4.16.0"
   },
+  "type": "module",
+  "//overrides": "Force patched versions of mocha's transitive deps — GHSA-73rr-hh4g-fpgx (diff DoS) and GHSA-5c6j-r48x-rmvq / GHSA-qj8w-gfj5-8c6v (serialize-javascript RCE/DoS). Remove when mocha ships a release that pulls in fixed versions.",
+  "overrides": {
+    "diff": "8.0.4",
+    "serialize-javascript": "7.1.0"
+  },
   "devDependencies": {
-    "@nomicfoundation/hardhat-network-helpers": "1.0.12",
-    "@nomicfoundation/hardhat-toolbox": "5.0.0",
-    "@typescript-eslint/eslint-plugin": "8.21.0",
-    "@typescript-eslint/parser": "8.21.0",
+    "@nomicfoundation/hardhat-ethers": "4.0.15",
+    "@nomicfoundation/hardhat-mocha": "3.1.0",
+    "@nomicfoundation/hardhat-network-helpers": "3.0.11",
+    "@types/chai-as-promised": "8.0.2",
+    "@typescript-eslint/eslint-plugin": "8.67.0",
+    "@typescript-eslint/parser": "8.67.0",
+    "chai": "6.2.2",
+    "chai-as-promised": "8.0.2",
     "concurrently": "9.1.2",
-    "eslint": "9.19.0",
-    "hardhat": "2.22.19",
-    "mockttp": "3.15.5",
-    "prettier": "3.4.2",
+    "eslint": "9.39.5",
+    "hardhat": "3.13.0",
+    "mocha": "11.8.0",
+    "mockttp": "4.6.0",
+    "prettier": "3.9.6",
     "typedoc": "0.27.6",
     "typedoc-plugin-markdown": "4.4.1"
   }

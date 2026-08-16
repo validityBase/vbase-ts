@@ -1,10 +1,9 @@
 import { expect } from "chai";
-import { Signer, zeroPadBytes } from "ethers";
-import hre, { ethers, network } from "hardhat";
-import { setNextBlockBaseFeePerGas } from "@nomicfoundation/hardhat-network-helpers";
+import { EventLog, type Signer, Wallet, zeroPadBytes } from "ethers";
+import hre from "hardhat";
 import { Web3 } from "web3";
 
-import { TransactionReceipt } from "web3-types";
+import type { TransactionReceipt } from "web3-types";
 
 import artifact from "../src/common/contracts/CommitmentService.json";
 import {
@@ -12,6 +11,7 @@ import {
   sendTxAndWaitForHash,
   isNonceError,
   isReplacementUnderpricedError,
+  isGasStationError,
   isGasError,
   isReceiptSuccessful,
   isReceiptReverted,
@@ -36,8 +36,12 @@ describe("Transactions", () => {
   let owner: Signer;
   let sender: Signer;
   let web3: Web3;
-  let ethersWallet: ethers.Wallet;
+  let ethersWallet: Wallet;
   let commitmentServiceAddress: string;
+  // In Hardhat v3, hre.network is a NetworkManager; the actual connection
+  // (with .provider, .ethers, .networkHelpers) is obtained via getOrCreate().
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let network: any;
 
   async function escalatedSendTransactionWorker(
     data: string,
@@ -54,18 +58,19 @@ describe("Transactions", () => {
   }
 
   beforeEach(async function () {
+    network = await hre.network.getOrCreate();
     // Reset mining behavior in case it was messed up by prior tests.
     await network.provider.send("evm_setIntervalMining", [0]);
     await network.provider.send("evm_setAutomine", [true]);
 
-    [owner, sender] = await ethers.getSigners();
-    const Contract = await ethers.getContractFactory(
+    [owner, sender] = await network.ethers.getSigners();
+    const Contract = await network.ethers.getContractFactory(
       artifact.abi,
       artifact.bytecode,
     );
     commitmentService = await Contract.deploy();
-    web3 = new Web3(hre.network.provider);
-    ethersWallet = new ethers.Wallet(SIGNER_PRIVATE_KEY, ethers.provider);
+    web3 = new Web3(network.provider);
+    ethersWallet = new Wallet(SIGNER_PRIVATE_KEY, network.ethers.provider);
     commitmentServiceAddress = await commitmentService.getAddress();
     // Set short gasPriceEscalationInterval for testing.
     txSettings.gasPriceEscalationInterval = 2000;
@@ -73,9 +78,22 @@ describe("Transactions", () => {
 
   describe("CommitmentService", () => {
     it("Executes addSet", async () => {
-      await expect(await commitmentService.addSet(TEST_HASH1))
-        .to.emit(commitmentService, "AddSet")
-        .withArgs(owner, TEST_HASH1);
+      // No hardhat-chai-matchers for HH3+Chai6 — inspect the receipt directly.
+      // In ethers v6, logs from a typed contract come back as EventLog instances.
+      const txResponse = await commitmentService.addSet(TEST_HASH1);
+      const receipt = await txResponse.wait();
+
+      // receipt.logs is (EventLog | Log)[]; only EventLog exposes eventName/args.
+      const addSetEvent = receipt.logs.find(
+        (log): log is EventLog =>
+          log instanceof EventLog && log.eventName === "AddSet",
+      );
+      // Prefer .equal() over .be.undefined so no-unused-expressions accepts Chai BDD.
+      expect(addSetEvent, "AddSet event not found in logs").to.not.equal(
+        undefined,
+      );
+      expect(await owner.getAddress()).to.equal(addSetEvent.args[0]);
+      expect(TEST_HASH1).to.equal(addSetEvent.args[1]);
       expect(
         await commitmentService.verifyUserSets(owner, TEST_HASH1),
       ).to.equal(true);
@@ -281,7 +299,7 @@ describe("Transactions", () => {
     setTimeout(async () => {
       console.log("> Spiking gas price...");
       const newGasPrice = initialGasPrice * 8;
-      await setNextBlockBaseFeePerGas(newGasPrice);
+      await network.networkHelpers.setNextBlockBaseFeePerGas(newGasPrice);
       console.log(
         "< Spiked gas price: initialGasPrice = " +
           initialGasPrice +
@@ -387,6 +405,29 @@ describe("Transaction helpers", () => {
 
     it("does not match non-nonce errors", () => {
       expect(isNonceError(new Error("insufficient funds"))).to.equal(false);
+    });
+  });
+
+  describe("isGasStationError", () => {
+    it("matches a human-readable 'gas station' message", () => {
+      expect(isGasStationError(new Error("gas station error"))).to.equal(true);
+    });
+
+    it("matches a Polygon SERVER_ERROR containing the gasstation host", () => {
+      const ethersMsg =
+        "error response (body=\"...\", url=\"https://gasstation.polygon.technology/v2\", code=SERVER_ERROR)";
+      expect(isGasStationError(new Error(ethersMsg))).to.equal(true);
+    });
+
+    it("matches case-insensitively", () => {
+      expect(isGasStationError(new Error("Gas Station Unreachable"))).to.equal(
+        true,
+      );
+    });
+
+    it("does not match unrelated errors", () => {
+      expect(isGasStationError(new Error("nonce too low"))).to.equal(false);
+      expect(isGasStationError(null)).to.equal(false);
     });
   });
 
@@ -766,6 +807,80 @@ describe("Transaction helpers", () => {
       expect(tx.gasPrice).to.equal(
         mulGasPriceByFactor(1000n, txSettings.gasPriceEscalationFactor),
       );
+    });
+  });
+
+  // Deterministic tests of the gas-station retry branch in sendTxAndWaitForHash,
+  // using a mock signer to inject the exact SERVER_ERROR ethers produces when the
+  // Polygon gas station (gasstation.polygon.technology) returns non-JSON.
+  describe("sendTxAndWaitForHash gas-station retry", () => {
+    const SIGNER_ADDRESS = "0x0000000000000000000000000000000000000001";
+
+    function makeMockSigner(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sendTransaction: (tx: any) => Promise<{ hash: string }>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ): any {
+      return {
+        provider: { getTransactionCount: async () => 5 },
+        getAddress: async () => SIGNER_ADDRESS,
+        sendTransaction,
+      };
+    }
+
+    function makeGasStationError(): Error {
+      return new Error(
+        "error response (body=\"invalid json\", url=\"https://gasstation.polygon.technology/v2\", code=SERVER_ERROR)",
+      );
+    }
+
+    const defaultWaitForSendTxRetryInterval =
+      txSettings.waitForSendTxRetryInterval;
+
+    beforeEach(() => {
+      txSettings.waitForSendTxRetryInterval = 1;
+    });
+
+    afterEach(() => {
+      txSettings.waitForSendTxRetryInterval = defaultWaitForSendTxRetryInterval;
+    });
+
+    it("retries after a gas-station SERVER_ERROR and returns the hash on success", async () => {
+      let attempt = 0;
+      const signer = makeMockSigner(async () => {
+        attempt += 1;
+        if (attempt === 1) throw makeGasStationError();
+        return { hash: "0xgas-station-retry" };
+      });
+      const tx = {
+        to: "0x0000000000000000000000000000000000000002",
+        data: "0x",
+        gasLimit: 21000,
+        gasPrice: 1000n,
+        nonce: 5,
+      };
+
+      const hash = await sendTxAndWaitForHash(signer, tx, true, LOGGER);
+
+      expect(hash).to.equal("0xgas-station-retry");
+      expect(attempt).to.equal(2);
+    });
+
+    it("throws after exhausting the retry budget on repeated gas-station errors", async () => {
+      const signer = makeMockSigner(async () => {
+        throw makeGasStationError();
+      });
+      const tx = {
+        to: "0x0000000000000000000000000000000000000002",
+        data: "0x",
+        gasLimit: 21000,
+        gasPrice: 1000n,
+        nonce: 5,
+      };
+
+      await expect(
+        sendTxAndWaitForHash(signer, tx, true, LOGGER),
+      ).to.be.rejectedWith("Failed to send transaction after");
     });
   });
 

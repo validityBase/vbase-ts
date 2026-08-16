@@ -1,5 +1,6 @@
 import { expect } from "chai";
-import hre, { ethers, network } from "hardhat";
+import { Wallet } from "ethers";
+import hre from "hardhat";
 import { randomBytes } from "crypto";
 import { Web3 } from "web3";
 
@@ -17,8 +18,12 @@ describe("Transactions", function () {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let commitmentService: any;
   let web3: Web3;
-  let ethersWallet: ethers.Wallet;
+  let ethersWallet: Wallet;
   let commitmentServiceAddress: string;
+  // In Hardhat v3, hre.network is a NetworkManager; the actual connection
+  // (with .provider, .ethers) is obtained via getOrCreate().
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let network: any;
 
   async function escalatedSendTransactionWorker(
     data: string,
@@ -42,24 +47,25 @@ describe("Transactions", function () {
       await commitmentService.verifyUserObject(
         ethersWallet.address,
         hash,
-        (await ethers.provider.getBlock(transactionReceipt.blockHash))
+        (await network.ethers.provider.getBlock(transactionReceipt.blockHash))
           .timestamp,
       ),
     ).to.equal(true);
   }
 
   beforeEach(async function () {
+    network = await hre.network.getOrCreate();
     // Reset mining behavior in case it was messed up by prior tests.
     await network.provider.send("evm_setIntervalMining", [0]);
     await network.provider.send("evm_setAutomine", [true]);
 
-    const Contract = await ethers.getContractFactory(
+    const Contract = await network.ethers.getContractFactory(
       artifact.abi,
       artifact.bytecode,
     );
     commitmentService = await Contract.deploy();
-    web3 = new Web3(hre.network.provider);
-    ethersWallet = new ethers.Wallet(SIGNER_PRIVATE_KEY, ethers.provider);
+    web3 = new Web3(network.provider);
+    ethersWallet = new Wallet(SIGNER_PRIVATE_KEY, network.ethers.provider);
     commitmentServiceAddress = await commitmentService.getAddress();
     // Set short intervals for stress testing.
     txSettings.gasPriceEscalationInterval = 1000;
