@@ -15,8 +15,6 @@
 - Runs on pull requests and pushes to `main` and `dev`.
 - Checks out the repository with the pinned `actions/checkout` action.
 - Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 22.
-- Logs in to GHCR with `GHCR_PAT`, then runs `ghcr.io/validitybase/commitment-service-localhost:latest`.
-- Installs Node.js dependencies through `validityBase/vbase-github-actions/.github/actions/setup-node-deps@v1` with Node.js 18.
 - Logs in to GHCR with the workflow `GITHUB_TOKEN`, then runs `ghcr.io/validitybase/commitment-service-localhost:latest`.
 - Runs `npm run test:spec:localhost`.
 - Removes the commitment service container with `if: always()`.
