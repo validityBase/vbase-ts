@@ -1,5 +1,5 @@
 import { expect } from "chai";
-import { EventLog, Signer, Wallet, zeroPadBytes } from "ethers";
+import { EventLog, type Signer, Wallet, zeroPadBytes } from "ethers";
 import hre from "hardhat";
 import { Web3 } from "web3";
 
