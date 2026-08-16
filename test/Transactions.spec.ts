@@ -415,7 +415,7 @@ describe("Transaction helpers", () => {
 
     it("matches a Polygon SERVER_ERROR containing the gasstation host", () => {
       const ethersMsg =
-        'error response (body="...", url="https://gasstation.polygon.technology/v2", code=SERVER_ERROR)';
+        "error response (body=\"...\", url=\"https://gasstation.polygon.technology/v2\", code=SERVER_ERROR)";
       expect(isGasStationError(new Error(ethersMsg))).to.equal(true);
     });
 
@@ -807,6 +807,80 @@ describe("Transaction helpers", () => {
       expect(tx.gasPrice).to.equal(
         mulGasPriceByFactor(1000n, txSettings.gasPriceEscalationFactor),
       );
+    });
+  });
+
+  // Deterministic tests of the gas-station retry branch in sendTxAndWaitForHash,
+  // using a mock signer to inject the exact SERVER_ERROR ethers produces when the
+  // Polygon gas station (gasstation.polygon.technology) returns non-JSON.
+  describe("sendTxAndWaitForHash gas-station retry", () => {
+    const SIGNER_ADDRESS = "0x0000000000000000000000000000000000000001";
+
+    function makeMockSigner(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sendTransaction: (tx: any) => Promise<{ hash: string }>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ): any {
+      return {
+        provider: { getTransactionCount: async () => 5 },
+        getAddress: async () => SIGNER_ADDRESS,
+        sendTransaction,
+      };
+    }
+
+    function makeGasStationError(): Error {
+      return new Error(
+        "error response (body=\"invalid json\", url=\"https://gasstation.polygon.technology/v2\", code=SERVER_ERROR)",
+      );
+    }
+
+    const defaultWaitForSendTxRetryInterval =
+      txSettings.waitForSendTxRetryInterval;
+
+    beforeEach(() => {
+      txSettings.waitForSendTxRetryInterval = 1;
+    });
+
+    afterEach(() => {
+      txSettings.waitForSendTxRetryInterval = defaultWaitForSendTxRetryInterval;
+    });
+
+    it("retries after a gas-station SERVER_ERROR and returns the hash on success", async () => {
+      let attempt = 0;
+      const signer = makeMockSigner(async () => {
+        attempt += 1;
+        if (attempt === 1) throw makeGasStationError();
+        return { hash: "0xgas-station-retry" };
+      });
+      const tx = {
+        to: "0x0000000000000000000000000000000000000002",
+        data: "0x",
+        gasLimit: 21000,
+        gasPrice: 1000n,
+        nonce: 5,
+      };
+
+      const hash = await sendTxAndWaitForHash(signer, tx, true, LOGGER);
+
+      expect(hash).to.equal("0xgas-station-retry");
+      expect(attempt).to.equal(2);
+    });
+
+    it("throws after exhausting the retry budget on repeated gas-station errors", async () => {
+      const signer = makeMockSigner(async () => {
+        throw makeGasStationError();
+      });
+      const tx = {
+        to: "0x0000000000000000000000000000000000000002",
+        data: "0x",
+        gasLimit: 21000,
+        gasPrice: 1000n,
+        nonce: 5,
+      };
+
+      await expect(
+        sendTxAndWaitForHash(signer, tx, true, LOGGER),
+      ).to.be.rejectedWith("Failed to send transaction after");
     });
   });
 

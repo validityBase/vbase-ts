@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,9 +16,9 @@
     "test:spec:localhost": "hardhat --network localhost test test/Transactions.spec.ts",
     "test:stress": "hardhat test test/Transactions.stress.ts",
     "test:stress:proxy": "hardhat --network localhost_proxy test test/Transactions.stress.ts",
-    "start:proxy-stress": "MAX_DELAY_MS=3000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.5 ts-node test/proxy-stress.ts",
-    "start:proxy-stress:long-delay": "MAX_DELAY_MS=5000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.1 ts-node test/proxy-stress.ts",
-    "start:proxy-stress:high-failure": "MAX_DELAY_MS=1000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.9 ts-node test/proxy-stress.ts",
+    "start:proxy-stress": "MAX_DELAY_MS=3000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.5 node test/proxy-stress.ts",
+    "start:proxy-stress:long-delay": "MAX_DELAY_MS=5000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.1 node test/proxy-stress.ts",
+    "start:proxy-stress:high-failure": "MAX_DELAY_MS=1000 TX_NOT_FOUND_FAILURE_PROBABILITY=0.9 node test/proxy-stress.ts",
     "format:check": "prettier --check '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "format:write": "prettier --write '**/*.{js,jsx,ts,tsx,sol,json,yaml,md}'",
     "lint:check": "eslint 'src/**/*.{js,jsx,ts,tsx}' 'test/**/*.{js,jsx,ts,tsx}' '*.{js,ts}'",

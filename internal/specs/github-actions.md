@@ -30,6 +30,7 @@
 - Uses `DOCS_REPO_ACCESS_TOKEN` for the central docs repository.
 
 ### `.github/workflows/repo-backup.yml`
+
 - Runs daily and through manual dispatch to create a full-history git bundle
   backup.
 - Delegates to `validityBase/vbase-github-actions/.github/workflows/repo-backup.yml@v1`.
