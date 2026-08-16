@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     "target": "es2020",
-    "module": "commonjs",
+    // NodeNext is required because package.json "type": "module" causes Node.js to
+    // load all .js output as ESM. NodeNext emits ESM-compatible output and enforces
+    // explicit .js extensions on relative imports in src/ (write ".js" even though
+    // the source file is ".ts" — tsc resolves it correctly at compile time).
+    "module": "NodeNext",
     "declaration": true,
     "sourceMap": true,
     "outDir": "./dist",

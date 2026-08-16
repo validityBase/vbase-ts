@@ -1,7 +1,6 @@
 import { expect } from "chai";
-import { Signer, zeroPadBytes } from "ethers";
-import hre, { ethers, network } from "hardhat";
-import { setNextBlockBaseFeePerGas } from "@nomicfoundation/hardhat-network-helpers";
+import { EventLog, Signer, Wallet, zeroPadBytes } from "ethers";
+import hre from "hardhat";
 import { Web3 } from "web3";
 
 import { TransactionReceipt } from "web3-types";
@@ -36,8 +35,12 @@ describe("Transactions", () => {
   let owner: Signer;
   let sender: Signer;
   let web3: Web3;
-  let ethersWallet: ethers.Wallet;
+  let ethersWallet: Wallet;
   let commitmentServiceAddress: string;
+  // In Hardhat v3, hre.network is a NetworkManager; the actual connection
+  // (with .provider, .ethers, .networkHelpers) is obtained via getOrCreate().
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let network: any;
 
   async function escalatedSendTransactionWorker(
     data: string,
@@ -54,18 +57,19 @@ describe("Transactions", () => {
   }
 
   beforeEach(async function () {
+    network = await hre.network.getOrCreate();
     // Reset mining behavior in case it was messed up by prior tests.
     await network.provider.send("evm_setIntervalMining", [0]);
     await network.provider.send("evm_setAutomine", [true]);
 
-    [owner, sender] = await ethers.getSigners();
-    const Contract = await ethers.getContractFactory(
+    [owner, sender] = await network.ethers.getSigners();
+    const Contract = await network.ethers.getContractFactory(
       artifact.abi,
       artifact.bytecode,
     );
     commitmentService = await Contract.deploy();
-    web3 = new Web3(hre.network.provider);
-    ethersWallet = new ethers.Wallet(SIGNER_PRIVATE_KEY, ethers.provider);
+    web3 = new Web3(network.provider);
+    ethersWallet = new Wallet(SIGNER_PRIVATE_KEY, network.ethers.provider);
     commitmentServiceAddress = await commitmentService.getAddress();
     // Set short gasPriceEscalationInterval for testing.
     txSettings.gasPriceEscalationInterval = 2000;
@@ -73,9 +77,22 @@ describe("Transactions", () => {
 
   describe("CommitmentService", () => {
     it("Executes addSet", async () => {
-      await expect(await commitmentService.addSet(TEST_HASH1))
-        .to.emit(commitmentService, "AddSet")
-        .withArgs(owner, TEST_HASH1);
+      // No hardhat-chai-matchers for HH3+Chai6 — inspect the receipt directly.
+      // In ethers v6, logs from a typed contract come back as EventLog instances.
+      const txResponse = await commitmentService.addSet(TEST_HASH1);
+      const receipt = await txResponse.wait();
+
+      // receipt.logs is (EventLog | Log)[]; only EventLog exposes eventName/args.
+      const addSetEvent = receipt.logs.find(
+        (log): log is EventLog =>
+          log instanceof EventLog && log.eventName === "AddSet",
+      );
+      // Prefer .equal() over .be.undefined so no-unused-expressions accepts Chai BDD.
+      expect(addSetEvent, "AddSet event not found in logs").to.not.equal(
+        undefined,
+      );
+      expect(await owner.getAddress()).to.equal(addSetEvent.args[0]);
+      expect(TEST_HASH1).to.equal(addSetEvent.args[1]);
       expect(
         await commitmentService.verifyUserSets(owner, TEST_HASH1),
       ).to.equal(true);
@@ -281,7 +298,7 @@ describe("Transactions", () => {
     setTimeout(async () => {
       console.log("> Spiking gas price...");
       const newGasPrice = initialGasPrice * 8;
-      await setNextBlockBaseFeePerGas(newGasPrice);
+      await network.networkHelpers.setNextBlockBaseFeePerGas(newGasPrice);
       console.log(
         "< Spiked gas price: initialGasPrice = " +
           initialGasPrice +

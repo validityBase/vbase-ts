@@ -3,8 +3,9 @@ import { pino } from "pino";
 import { Web3 } from "web3";
 import { TransactionReceipt } from "web3-types";
 
-import txSettings from "./txSettings";
-import { serializeBigInts } from "./utils";
+// .js extensions are required by NodeNext module resolution (see tsconfig.json).
+import txSettings from "./txSettings.js";
+import { serializeBigInts } from "./utils.js";
 
 /**
  * Transaction submission is organized into two nested layers:
@@ -149,6 +150,16 @@ export function isReplacementUnderpricedError(error: any): boolean {
     error.message.includes("replacement transaction underpriced") ||
     error.message.includes("replacement fee too low") ||
     error.message.includes("replacement underpriced")
+  );
+}
+
+// Check if the error is a transient gas station failure (e.g. the Polygon gas
+// station returning non-JSON). These are external-service failures unrelated to
+// the transaction itself; retry with backoff. Exported for unit testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isGasStationError(error: any): boolean {
+  return (
+    typeof error?.message === "string" && error.message.includes("gas station")
   );
 }
 
@@ -372,6 +383,15 @@ export async function sendTxAndWaitForHash(
           // check for tx completion for the prior txs.
           throw error;
         }
+      }
+      if (isGasStationError(error)) {
+        // The provider's gas station (e.g. gasstation.polygon.technology) returned
+        // invalid JSON. This is a transient external-service failure; wait and retry.
+        await waitForSendTxRetry(totalAttempts, logger);
+        logger.info(
+          "sendTxAndWaitForHash(): gas station error, retrying after backoff",
+        );
+        continue;
       }
       if (isGasError(error)) {
         // If the error complains about gas, increase the gas limit and retry.
@@ -606,6 +626,10 @@ export async function escalatedSendTransaction(
     gasLimit: gasLimit,
     gasPrice: gasPrice,
     nonce: nonce,
+    // Force legacy type so ethers doesn't call the Polygon gas station
+    // (gasstation.polygon.technology/v2) to determine fee mechanism. The gas
+    // station is unreliable and returns non-JSON under load, causing SERVER_ERROR.
+    type: 0,
   };
   logger.debug(
     `escalatedSendTransaction(): tx = ${JSON.stringify(serializeBigInts(tx))}`,
