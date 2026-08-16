@@ -11,6 +11,7 @@ import {
   sendTxAndWaitForHash,
   isNonceError,
   isReplacementUnderpricedError,
+  isGasStationError,
   isGasError,
   isReceiptSuccessful,
   isReceiptReverted,
@@ -404,6 +405,29 @@ describe("Transaction helpers", () => {
 
     it("does not match non-nonce errors", () => {
       expect(isNonceError(new Error("insufficient funds"))).to.equal(false);
+    });
+  });
+
+  describe("isGasStationError", () => {
+    it("matches a human-readable 'gas station' message", () => {
+      expect(isGasStationError(new Error("gas station error"))).to.equal(true);
+    });
+
+    it("matches a Polygon SERVER_ERROR containing the gasstation host", () => {
+      const ethersMsg =
+        'error response (body="...", url="https://gasstation.polygon.technology/v2", code=SERVER_ERROR)';
+      expect(isGasStationError(new Error(ethersMsg))).to.equal(true);
+    });
+
+    it("matches case-insensitively", () => {
+      expect(isGasStationError(new Error("Gas Station Unreachable"))).to.equal(
+        true,
+      );
+    });
+
+    it("does not match unrelated errors", () => {
+      expect(isGasStationError(new Error("nonce too low"))).to.equal(false);
+      expect(isGasStationError(null)).to.equal(false);
     });
   });
 

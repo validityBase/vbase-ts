@@ -14,7 +14,7 @@ export default defineConfig({
       timeout: 60 * 60 * 1000,
       // Register chai-as-promised before tests run (needed for .rejectedWith()).
       // NOTE: Hardhat uses Mocha programmatically (new Mocha(config)), so the
-      // 'require' option is silently ignored. rootHooks.before IS processed by
+      // 'require' option is silently ignored. rootHooks.beforeAll IS processed by
       // the Mocha constructor and runs before any test suite.
       rootHooks: {
         beforeAll() {

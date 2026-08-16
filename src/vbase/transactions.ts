@@ -158,9 +158,11 @@ export function isReplacementUnderpricedError(error: any): boolean {
 // the transaction itself; retry with backoff. Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isGasStationError(error: any): boolean {
-  return (
-    typeof error?.message === "string" && error.message.includes("gas station")
-  );
+  if (typeof error?.message !== "string") return false;
+  const msg = error.message.toLowerCase();
+  // Match both "gas station" (human-readable) and "gasstation" (as it appears
+  // in the Polygon host gasstation.polygon.technology embedded in ethers errors).
+  return msg.includes("gas station") || msg.includes("gasstation");
 }
 
 // Check if the error is a low gas error.
