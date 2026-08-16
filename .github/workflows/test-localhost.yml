@@ -7,12 +7,14 @@ on:
       - main
       - dev
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout repository
@@ -27,8 +29,9 @@ jobs:
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
         with:
           registry: ghcr.io
+          # Recommended GHCR authentication: use github.actor with the workflow's GITHUB_TOKEN.
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull and Run the vBase Commitment Service Docker container
         run: |
