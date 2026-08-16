@@ -1,7 +1,7 @@
 import { NonceManager, type Signer, type TransactionRequest } from "ethers";
 import { pino } from "pino";
 import { Web3 } from "web3";
-import { TransactionReceipt } from "web3-types";
+import type { TransactionReceipt } from "web3-types";
 
 // .js extensions are required by NodeNext module resolution (see tsconfig.json).
 import txSettings from "./txSettings.js";
@@ -39,7 +39,7 @@ import { serializeBigInts } from "./utils.js";
  * transaction rather than creating new ones.
  */
 
-function verifyTx(signer: Signer, tx: TransactionRequest): void {
+function verifyTx(tx: TransactionRequest): void {
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
   if (!tx.gasLimit) {
@@ -240,7 +240,7 @@ export async function sendTxAndWaitForHash(
   // See nStuckTxConfirmations for the rationale.
   let stuckNonceChecks = 0;
 
-  verifyTx(signer, tx);
+  verifyTx(tx);
 
   // Retry on errors.
   // budgetAttempts is charged for each attempt; productive fee bumps do not

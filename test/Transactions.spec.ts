@@ -3,7 +3,7 @@ import { EventLog, type Signer, Wallet, zeroPadBytes } from "ethers";
 import hre from "hardhat";
 import { Web3 } from "web3";
 
-import { TransactionReceipt } from "web3-types";
+import type { TransactionReceipt } from "web3-types";
 
 import artifact from "../src/common/contracts/CommitmentService.json";
 import {

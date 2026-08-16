@@ -1,5 +1,5 @@
 import { zeroPadBytes } from "ethers";
-import { Bytes, Web3 } from "web3";
+import { type Bytes, Web3 } from "web3";
 import pino from "pino";
 
 import { abi } from "../src/common/contracts/CommitmentService.json";
