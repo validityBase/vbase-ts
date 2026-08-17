@@ -26,7 +26,7 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
 
 ## Tests
 
-### Unit Tests
+### Default-Network Tests
 
 1. Change to the working directory:
 
@@ -34,9 +34,9 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
    cd ~/validityBase/vbase-ts
    ```
 
-1. Run localhost tests:
+1. Run tests against Hardhat's default in-process network:
 
-   1. Run all tests:
+   1. Run all tests, including the stress suite:
 
       ```bash
       npm run test
@@ -49,6 +49,9 @@ With vBase, creating and consuming provably correct data is as easy as pressing 
       ```
 
 ### Stress Tests
+
+Before running any proxy stress test, start an RPC service on `localhost:8545`.
+The proxy scripts listen on port 8546 and forward requests to that service.
 
 1. Run general RPC stress tests:
 

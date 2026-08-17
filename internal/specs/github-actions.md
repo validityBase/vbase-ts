@@ -4,8 +4,9 @@
 
 - Third-party actions are pinned by full commit SHA for reproducibility.
 - Shared vBase-owned actions use `validityBase/vbase-github-actions` with reviewed release tags such as `@v1`.
-- Workflows default to `permissions: {}`; each job declares only the permissions
-  it requires. GHCR pull/test jobs grant `packages: read`.
+- Workflows declare permissions explicitly. `test-localhost.yml` defaults to
+  `permissions: {}` and grants its test job `contents: read` and `packages: read`;
+  the docs and backup workflows grant `contents: read` at workflow level.
 - Secrets must come from GitHub Secrets or deployment configuration, never from committed files or logs.
 
 ## Workflows

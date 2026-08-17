@@ -581,7 +581,7 @@ async function waitForTxCompletionCheck(
  * @param {pino.Logger} logger - The logger instance for debugging and error tracking.
  * @param {number} [gasLimit] - Optional gas limit for the transaction.
  *
- * @returns {Promise<string>} - A promise that resolves to the transaction hash.
+ * @returns {Promise<TransactionReceipt>} - A promise that resolves to the transaction receipt.
  *
  * @throws {Error} If the transaction fails to send or encounters an error.
  */

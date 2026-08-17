@@ -1,6 +1,6 @@
 # Agent Memory
 
-- [HH3 migration incompatibilities and fixes](project_hh3_migration.md) — All root causes and fixes for test failures from the HH2→HH3 migration on dev-greg branch
+- [HH3 migration incompatibilities and fixes](project_hh3_migration.md) — Historical root causes and fixes from the completed HH2→HH3 migration, now merged into `main`
 
 ## Module System
 
