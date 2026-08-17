@@ -1,25 +1,25 @@
 ---
 name: Hardhat v2→v3 migration incompatibilities and fixes
-description: Root-cause analysis and fixes for all test failures caused by the ongoing HH2→HH3 migration on dev-greg branch
+description: Root-cause analysis and fixes for test failures from the completed HH2→HH3 migration, now merged into main
 type: project
 ---
 
 ## Context
 
-The `dev-greg` branch is a Hardhat 2 → Hardhat 3 migration.
-Main branch used `@nomicfoundation/hardhat-toolbox@5` which bundled many plugins and exported
+The `dev-greg` branch carried the Hardhat 2 → Hardhat 3 migration, which is now merged into `main`.
+Before the migration, `main` used `@nomicfoundation/hardhat-toolbox@5`, which bundled many plugins and exported
 HRE shortcuts. That toolbox was removed entirely in v3.
 
-Tests were passing on `main` (HH2). The migration on `dev-greg` introduced the following incompatibilities.
+Tests passed on the pre-migration `main` branch (HH2). The migration introduced the following incompatibilities.
 
 ---
 
 ## Incompatibility 1 — `hardhat-toolbox` removed; `{ ethers, network }` HRE shortcuts gone
 
-**HH2 (main):** `@nomicfoundation/hardhat-toolbox@5` bundled `hardhat-ethers`, `hardhat-chai-matchers`,
+**HH2 (pre-migration `main`):** `@nomicfoundation/hardhat-toolbox@5` bundled `hardhat-ethers`, `hardhat-chai-matchers`,
 `hardhat-network-helpers`, and exposed `{ ethers, network }` as named exports from `"hardhat"`.
 
-**HH3 (dev-greg):** `hardhat-toolbox` is gone. Individual plugins are used. The `"hardhat"` module
+**HH3 (current):** `hardhat-toolbox` is gone. Individual plugins are used. The `"hardhat"` module
 no longer exports `ethers` or a `NetworkConnection`-like `network`.
 
 **Fix applied:** Removed named imports. Use `hre.network.getOrCreate()` (see #2 below).
@@ -91,12 +91,14 @@ Deleted `test/setup.ts` (was dead code).
 
 ---
 
-## Incompatibility 5 — `.emit()` chai assertion unavailable
+## Incompatibility 5 — `.emit()` chai assertion unavailable in the current configuration
 
 **HH2:** `hardhat-toolbox` bundled `@nomicfoundation/hardhat-chai-matchers@2.x` which registered
 `.emit()` on chai. Tests like `expect(tx).to.emit(contract, "EventName").withArgs(...)` worked.
 
-**HH3 + Chai@6:** No compatible `hardhat-chai-matchers` exists:
+**HH3 + Chai@6:** The older `hardhat-chai-matchers` package is incompatible, and this
+repository does not install the newer `@nomicfoundation/hardhat-ethers-chai-matchers`
+package that provides HH3-compatible matchers:
 
 - `@nomicfoundation/hardhat-chai-matchers@latest` (v3.0.0) is a stub that just prints an error
   and exits (`process.exit(1)`). It does NOT work with HH2 or HH3.
@@ -108,9 +110,11 @@ directly using the ethers v6 typed `EventLog` API:
 ```typescript
 const txResponse = await commitmentService.addSet(TEST_HASH1);
 const receipt = await txResponse.wait();
-// ethers v6 decodes logs via the contract ABI → EventLog instances with .eventName / .args
-const addSetEvent = receipt.logs.find((log: any) => log.eventName === "AddSet");
-expect(addSetEvent, "AddSet event not found in logs").to.not.be.undefined;
+const addSetEvent = receipt.logs.find(
+  (log): log is EventLog =>
+    log instanceof EventLog && log.eventName === "AddSet",
+);
+expect(addSetEvent, "AddSet event not found in logs").to.not.equal(undefined);
 expect(await owner.getAddress()).to.equal(addSetEvent.args[0]);
 expect(TEST_HASH1).to.equal(addSetEvent.args[1]);
 ```
@@ -130,4 +134,4 @@ logs from that contract are decoded as `EventLog` instances with `.eventName` an
 | `test/Transactions.stress.ts` | Same HH3 network/ethers access pattern as spec: `network = await hre.network.getOrCreate()`, then `network.provider` / `network.ethers` (was still on HH2 `hre.network.provider` / `hre.ethers`)                                                                                                           |
 | `test/setup.ts`               | Deleted (was never loaded; superseded by `rootHooks.beforeAll`)                                                                                                                                                                                                                                            |
 
-**Why:** How to apply: whenever working on this project's test infrastructure or Hardhat config, keep in mind that it is mid-migration from HH2 to HH3 and the patterns are NOT the same as HH2 docs show.
+**Why:** How to apply: whenever working on this project's test infrastructure or Hardhat config, keep in mind that the HH3 migration is complete and its patterns are NOT the same as HH2 docs show.
