@@ -2,6 +2,8 @@
 
 ## Policy
 
+- GitHub-hosted Ubuntu jobs pin `ubuntu-24.04` so runner OS changes are
+  reviewed explicitly.
 - Third-party actions are pinned by full commit SHA for reproducibility.
 - Shared vBase-owned actions use `validityBase/vbase-github-actions` with reviewed release tags such as `@v1`.
 - Workflows declare permissions explicitly. `test-localhost.yml` defaults to
