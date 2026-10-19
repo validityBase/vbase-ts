@@ -8,7 +8,7 @@
 - Shared vBase-owned actions use `validityBase/vbase-github-actions` with reviewed release tags such as `@v1`.
 - Workflows declare permissions explicitly. `test-localhost.yml` defaults to
   `permissions: {}` and grants its test job `contents: read` and `packages: read`;
-  the docs and backup workflows grant `contents: read` at workflow level.
+  the docs workflow grants `contents: read` at workflow level.
 - Secrets must come from GitHub Secrets or deployment configuration, never from committed files or logs.
 
 ## Workflows
@@ -31,16 +31,3 @@
 - Publishes `_docs` with `validityBase/vbase-github-actions/.github/actions/publish-docs@v1`.
 - Publishes to the `main` branch of the central docs repository.
 - Uses `DOCS_REPO_ACCESS_TOKEN` for the central docs repository.
-
-### `.github/workflows/repo-backup.yml`
-
-- Runs daily and through manual dispatch. The shared workflow creates a monthly
-  full Git bundle or a daily differential backup.
-- Delegates to `validityBase/vbase-github-actions/.github/workflows/repo-backup.yml@v2`.
-- Uses reviewed moving major tags for validityBase-owned shared workflows so
-  centrally reviewed fixes roll forward without per-repository pin updates.
-- Requires `VBASE_COMMON_REPO_READ_TOKEN` and
-  `VBASE_REPO_BACKUP_SECRETS_TOKEN` GitHub Actions secrets.
-- Reads object storage credentials from the `vbase-repo-backups` Bitwarden
-  project at runtime; bucket lifecycle and restore-test policy live outside
-  this repository.
