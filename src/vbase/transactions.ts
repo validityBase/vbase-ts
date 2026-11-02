@@ -435,7 +435,7 @@ async function sendAndSaveTxHash(
   logger.debug(`< sendAndSaveTxHash(): txHashes = ${txHashes}`);
 }
 
-function estimateGasLimit(data: string, logger: pino.Logger): number {
+export function estimateGasLimit(data: string, logger: pino.Logger): number {
   // Estimate gas using a profiled model for gas use.
   // CommitmentService.gas.ts estimates the following gas use
   // as a function of data.length.
