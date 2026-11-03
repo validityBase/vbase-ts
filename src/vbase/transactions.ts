@@ -39,6 +39,43 @@ import { serializeBigInts } from "./utils.js";
  * transaction rather than creating new ones.
  */
 
+// Thrown when escalatedSendTransaction() fails before calling
+// signer.sendTransaction() — i.e., during gas-price or nonce fetching.
+// This is the only case with positive evidence that no submission reached
+// the network; the controller should refund the credit.
+export class PreSubmissionError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Transaction not submitted: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "PreSubmissionError";
+  }
+}
+
+// Thrown when a transaction is confirmed on-chain with a revert status.
+// Gas was spent by the forwarder regardless of the revert; the credit is
+// NOT refunded.
+export class MinedRevertError extends Error {
+  constructor(txHash: string, status: unknown) {
+    super(
+      `Transaction reverted on-chain (status = ${status}): txHash = ${txHash}`,
+    );
+    this.name = "MinedRevertError";
+  }
+}
+
+// Thrown when the escalation loop exhausts its budget without receiving a
+// receipt. The transaction may already be in the mempool or mined; the
+// outcome is uncertain so the credit is NOT refunded.
+export class ConfirmationTimeoutError extends Error {
+  constructor(maxEscalations: number) {
+    super(
+      `Transaction was not confirmed after the initial send and ${maxEscalations} escalation cycles.`,
+    );
+    this.name = "ConfirmationTimeoutError";
+  }
+}
+
 function verifyTx(tx: TransactionRequest): void {
   // The caller should always set the gasLimit and nonce.
   // using the heuristic in escalatedSendTransaction().
@@ -548,11 +585,11 @@ export async function getCompletedTxReceipt(
       // escalating/polling further would only end in a generic timeout. Fail
       // fast with a clear, actionable error instead. (At most one tx per nonce
       // can be mined, so a reverted tracked tx is the definitive outcome.)
-      const error_msg =
-        "getCompletedTxReceipt(): transaction reverted on-chain " +
-        `(status = ${receipt.status}): txHash = ${txHash}`;
-      logger.error(error_msg);
-      throw new Error(error_msg);
+      logger.error(
+        `getCompletedTxReceipt(): transaction reverted on-chain ` +
+          `(status = ${receipt.status}): txHash = ${txHash}`,
+      );
+      throw new MinedRevertError(txHash, receipt.status);
     }
   }
 
@@ -602,8 +639,15 @@ export async function escalatedSendTransaction(
     gasLimit = estimateGasLimit(data, logger);
   }
 
-  // Calculate an aggressive gas price premium for the initial tx.
-  const currentGasPrice = await web3.eth.getGasPrice();
+  // Fetch gas price and nonce before any sendTransaction() call.
+  // Wrap both in PreSubmissionError so callers have positive evidence that
+  // no transaction reached the network if either fails.
+  let currentGasPrice: bigint;
+  try {
+    currentGasPrice = await web3.eth.getGasPrice();
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
   logger.debug(
     `escalatedSendTransaction(): currentGasPrice = ${currentGasPrice}`,
   );
@@ -619,7 +663,12 @@ export async function escalatedSendTransaction(
   // could get the same nonce and one of them will fail with nonce too low.
   // We address this by updating nonce on failure and retrying,
   // but this is inefficient and could be avoided with a global counter.
-  const nonce = await getNonce(signer);
+  let nonce: number;
+  try {
+    nonce = await getNonce(signer);
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
   const tx = {
@@ -731,7 +780,8 @@ export async function escalatedSendTransaction(
     }
   }
 
-  const error_msg = `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`;
-  logger.error(error_msg);
-  throw new Error(error_msg);
+  logger.error(
+    `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`,
+  );
+  throw new ConfirmationTimeoutError(txSettings.maxGasPriceEscalations);
 }
