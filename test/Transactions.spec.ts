@@ -1031,6 +1031,102 @@ describe("Transaction recovery error types", () => {
     expect((caught as PreSubmissionError).cause).to.equal(providerError);
   });
 
+  it("escalatedSendTransaction throws PreSubmissionError when the initial send never returns a hash", async () => {
+    const defaultNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 1;
+    const providerError = new Error(
+      "insufficient funds for intrinsic transaction cost",
+    );
+    const signer = {
+      ...makeMockSigner(),
+      sendTransaction: async () => {
+        throw providerError;
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        signer as never,
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+      );
+    } catch (e) {
+      caught = e;
+    } finally {
+      txSettings.nSendTxRetries = defaultNSendTxRetries;
+    }
+    expect(caught).to.be.instanceOf(PreSubmissionError);
+    expect((caught as PreSubmissionError).cause).to.be.instanceOf(Error);
+  });
+
+  it("escalatedSendTransaction never raises the gas limit above maxGasLimit", async () => {
+    const defaultNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 3;
+    const sentGasLimits: bigint[] = [];
+    let attempt = 0;
+    const signer = {
+      ...makeMockSigner(),
+      provider: {
+        getTransactionCount: async () => 5,
+        getBlock: async () => ({ number: 1, gasLimit: 100_000_000n }),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sendTransaction: async (tx: any) => {
+        sentGasLimits.push(BigInt(tx.gasLimit));
+        attempt += 1;
+        if (attempt < 3) throw new Error("intrinsic gas too low");
+        return { hash: "0xcapped" };
+      },
+    };
+
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        signer as never,
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+        400_000,
+        1_000_000,
+      );
+    } catch {
+      // ConfirmationTimeoutError: the escalation loop is collapsed in tests.
+    } finally {
+      txSettings.nSendTxRetries = defaultNSendTxRetries;
+    }
+    expect(sentGasLimits).to.deep.equal([400_000n, 800_000n, 1_000_000n]);
+  });
+
+  it("escalatedSendTransaction caps the initial gas limit at maxGasLimit", async () => {
+    const sentGasLimits: bigint[] = [];
+    const signer = {
+      ...makeMockSigner(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sendTransaction: async (tx: any) => {
+        sentGasLimits.push(BigInt(tx.gasLimit));
+        return { hash: "0xcapped" };
+      },
+    };
+
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        signer as never,
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+        5_000_000,
+        1_000_000,
+      );
+    } catch {
+      // ConfirmationTimeoutError: the escalation loop is collapsed in tests.
+    }
+    expect(sentGasLimits).to.deep.equal([1_000_000n]);
+  });
+
   it("escalatedSendTransaction throws ConfirmationTimeoutError when the escalation loop exhausts", async () => {
     let caught: unknown;
     try {

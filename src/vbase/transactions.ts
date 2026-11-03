@@ -39,11 +39,13 @@ import { serializeBigInts } from "./utils.js";
  * transaction rather than creating new ones.
  */
 
-// Thrown when escalatedSendTransaction() fails before calling
-// signer.sendTransaction() — i.e., during gas-price or nonce fetching.
-// This is the only case with positive evidence that no submission reached
-// the network; the controller should refund the credit.
-// The underlying provider error is exposed as `cause` so recovery code can
+// Thrown when escalatedSendTransaction() fails before any send returned a
+// transaction hash: gas-price or nonce fetching failed, or every initial send
+// attempt was rejected or errored (for example, the signer has insufficient
+// funds or ethers failed to populate the transaction). No transaction hash
+// exists, so callers may treat the transaction as not submitted. A transport
+// error that hid a send the node actually accepted is the one rare exception.
+// The underlying error is exposed as `cause` so recovery code can
 // inspect its type, code, and stack.
 export class PreSubmissionError extends Error {
   // Declared explicitly because the es2020 lib typings do not include
@@ -235,6 +237,7 @@ export function isGasError(error: any): boolean {
 async function increaseGasLimit(
   tx: TransactionRequest,
   signer: Signer,
+  maxGasLimit?: number,
 ): Promise<void> {
   if (!tx.gasLimit) {
     throw new Error("increaseGasLimit(): gasLimit undefined");
@@ -267,6 +270,10 @@ async function increaseGasLimit(
   if (tx.gasLimit > increaseGasLimit.blockGasLimit) {
     tx.gasLimit = increaseGasLimit.blockGasLimit;
   }
+  // Never exceed the caller's hard ceiling, which bounds the gas cost of a tx.
+  if (maxGasLimit !== undefined && tx.gasLimit > BigInt(maxGasLimit)) {
+    tx.gasLimit = BigInt(maxGasLimit);
+  }
 }
 
 // Attach static variables to the function for caching via a property.
@@ -280,6 +287,7 @@ export async function sendTxAndWaitForHash(
   tx: TransactionRequest,
   initialSend: boolean,
   logger: pino.Logger,
+  maxGasLimit?: number,
 ): Promise<string> {
   logger.debug("> sendTxAndWaitForHash()");
   // totalAttempts: monotonically increasing count of all send attempts,
@@ -455,7 +463,7 @@ export async function sendTxAndWaitForHash(
         // If the error complains about gas, increase the gas limit and retry.
         // We do not need to wait before retrying since only the gas limit is updated
         // and there is no evidence we are racing with other txs.
-        await increaseGasLimit(tx, signer);
+        await increaseGasLimit(tx, signer, maxGasLimit);
         logger.info(
           `sendTxAndWaitForHash(): Retrying with increased gasLimit = ${tx.gasLimit}`,
         );
@@ -475,11 +483,18 @@ async function sendAndSaveTxHash(
   txHashes: string[],
   initialSend: boolean,
   logger: pino.Logger,
+  maxGasLimit?: number,
 ): Promise<void> {
   logger.debug("> sendAndSaveTxHash()");
   let txHash: string;
   try {
-    txHash = await sendTxAndWaitForHash(signer, tx, initialSend, logger);
+    txHash = await sendTxAndWaitForHash(
+      signer,
+      tx,
+      initialSend,
+      logger,
+      maxGasLimit,
+    );
     logger.debug(`sendAndSaveTxHash(): txHash = ${txHash}`);
     txHashes.push(txHash);
   } catch (error) {
@@ -605,7 +620,7 @@ export async function getCompletedTxReceipt(
       // fast with a clear, actionable error instead. (At most one tx per nonce
       // can be mined, so a reverted tracked tx is the definitive outcome.)
       logger.error(
-        `getCompletedTxReceipt(): transaction reverted on-chain ` +
+        "getCompletedTxReceipt(): transaction reverted on-chain " +
           `(status = ${receipt.status}): txHash = ${txHash}`,
       );
       throw new MinedRevertError(txHash, receipt.status);
@@ -636,17 +651,18 @@ async function waitForTxCompletionCheck(
  * @param {string} data - The encoded transaction data.
  * @param {pino.Logger} logger - The logger instance for debugging and error tracking.
  * @param {number} [gasLimit] - Optional gas limit for the transaction.
+ * @param {number} [maxGasLimit] - Optional hard ceiling for the gas limit. The
+ *   initial gas limit and every gas-limit increase on retry are capped at it.
  *
  * @returns {Promise<TransactionReceipt>} - A promise that resolves to the transaction receipt.
  *
- * @throws {PreSubmissionError} If fetching the gas price or nonce fails, before
- *   any transaction is sent. The original error is available as `cause`.
+ * @throws {PreSubmissionError} If fetching the gas price or nonce fails, or the
+ *   initial send fails after its retry budget, so no transaction hash was ever
+ *   returned. The original error is available as `cause`.
  * @throws {MinedRevertError} If a submitted transaction is mined with a revert
  *   status. The reverted hash and status are available as `txHash` and `status`.
  * @throws {ConfirmationTimeoutError} If no receipt is found after the initial
  *   send and all escalations. Every submitted hash is available as `txHashes`.
- * @throws {Error} If the initial send fails after its retry budget. A
- *   submission may have reached the network, so the outcome is uncertain.
  */
 export async function escalatedSendTransaction(
   web3: Web3,
@@ -655,6 +671,7 @@ export async function escalatedSendTransaction(
   data: string,
   logger: pino.Logger,
   gasLimit?: number,
+  maxGasLimit?: number,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
   logger.debug(
@@ -663,6 +680,9 @@ export async function escalatedSendTransaction(
 
   if (gasLimit === undefined) {
     gasLimit = estimateGasLimit(data, logger);
+  }
+  if (maxGasLimit !== undefined) {
+    gasLimit = Math.min(gasLimit, maxGasLimit);
   }
 
   // Fetch gas price and nonce before any sendTransaction() call.
@@ -720,7 +740,13 @@ export async function escalatedSendTransaction(
   // Send the initial tx.
   // Note that the initial tx may have its nonce updated
   // if a prior tx has completed and updated the nonce.
-  await sendAndSaveTxHash(signer, tx, txHashes, true, logger);
+  // A failure here means no send ever returned a hash, so report it as
+  // PreSubmissionError for callers that refund unsubmitted transactions.
+  try {
+    await sendAndSaveTxHash(signer, tx, txHashes, true, logger, maxGasLimit);
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
   logger.debug(
     `escalatedSendTransaction(): After sendAndSaveTxHash() tx = ${JSON.stringify(serializeBigInts(tx))}`,
   );
@@ -776,7 +802,14 @@ export async function escalatedSendTransaction(
       // Send the escalated tx.
       // The tx will be submitted with the initial or updated nonce.
       try {
-        await sendAndSaveTxHash(signer, tx, txHashes, false, logger);
+        await sendAndSaveTxHash(
+          signer,
+          tx,
+          txHashes,
+          false,
+          logger,
+          maxGasLimit,
+        );
       } catch (error) {
         logger.error(
           `escalatedSendTransaction(): sendAndSaveTxHash(): error = ${error}`,
