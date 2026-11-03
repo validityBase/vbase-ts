@@ -977,10 +977,11 @@ describe("Transaction recovery error types", () => {
   });
 
   it("escalatedSendTransaction throws PreSubmissionError when gas-price fetch fails", async () => {
+    const providerError = new Error("gas station unreachable");
     const web3 = {
       eth: {
         getGasPrice: async () => {
-          throw new Error("gas station unreachable");
+          throw providerError;
         },
         getTransactionReceipt: async () => null,
       },
@@ -999,13 +1000,15 @@ describe("Transaction recovery error types", () => {
       caught = e;
     }
     expect(caught).to.be.instanceOf(PreSubmissionError);
+    expect((caught as PreSubmissionError).cause).to.equal(providerError);
   });
 
   it("escalatedSendTransaction throws PreSubmissionError when nonce fetch fails", async () => {
+    const providerError = new Error("rpc unavailable");
     const signer = {
       provider: {
         getTransactionCount: async () => {
-          throw new Error("rpc unavailable");
+          throw providerError;
         },
       },
       getAddress: async () => SIGNER_ADDRESS,
@@ -1025,6 +1028,7 @@ describe("Transaction recovery error types", () => {
       caught = e;
     }
     expect(caught).to.be.instanceOf(PreSubmissionError);
+    expect((caught as PreSubmissionError).cause).to.equal(providerError);
   });
 
   it("escalatedSendTransaction throws ConfirmationTimeoutError when the escalation loop exhausts", async () => {
@@ -1041,6 +1045,11 @@ describe("Transaction recovery error types", () => {
       caught = e;
     }
     expect(caught).to.be.instanceOf(ConfirmationTimeoutError);
+    // The initial send's hash must be exposed so callers can resolve the
+    // outcome before resubmitting.
+    expect((caught as ConfirmationTimeoutError).txHashes).to.deep.equal([
+      "0xsuccess",
+    ]);
   });
 
   it("getCompletedTxReceipt throws MinedRevertError with typed txHash and status properties", async () => {

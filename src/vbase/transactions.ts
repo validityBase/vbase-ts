@@ -43,12 +43,18 @@ import { serializeBigInts } from "./utils.js";
 // signer.sendTransaction() — i.e., during gas-price or nonce fetching.
 // This is the only case with positive evidence that no submission reached
 // the network; the controller should refund the credit.
+// The underlying provider error is exposed as `cause` so recovery code can
+// inspect its type, code, and stack.
 export class PreSubmissionError extends Error {
+  // Declared explicitly because the es2020 lib typings do not include
+  // Error.cause or the `super(message, { cause })` constructor option.
+  readonly cause: unknown;
   constructor(cause: unknown) {
     super(
       `Transaction not submitted: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "PreSubmissionError";
+    this.cause = cause;
   }
 }
 
@@ -73,12 +79,19 @@ export class MinedRevertError extends Error {
 // Thrown when the escalation loop exhausts its budget without receiving a
 // receipt. The transaction may already be in the mempool or mined; the
 // outcome is uncertain so the credit is NOT refunded.
+// Every submitted transaction hash (the initial send and each same-nonce
+// replacement) is exposed as `txHashes` so recovery code can query their
+// receipts and determine the outcome before resubmitting.
 export class ConfirmationTimeoutError extends Error {
-  constructor(maxEscalations: number) {
+  readonly txHashes: readonly string[];
+  constructor(maxEscalations: number, txHashes: readonly string[]) {
     super(
-      `Transaction was not confirmed after the initial send and ${maxEscalations} escalation cycles.`,
+      `Transaction was not confirmed after the initial send and ${maxEscalations} escalation cycles: ` +
+        `txHashes = ${txHashes.join(", ")}`,
     );
     this.name = "ConfirmationTimeoutError";
+    // Copy so later mutation of the caller's array cannot change the error.
+    this.txHashes = [...txHashes];
   }
 }
 
@@ -626,7 +639,14 @@ async function waitForTxCompletionCheck(
  *
  * @returns {Promise<TransactionReceipt>} - A promise that resolves to the transaction receipt.
  *
- * @throws {Error} If the transaction fails to send or encounters an error.
+ * @throws {PreSubmissionError} If fetching the gas price or nonce fails, before
+ *   any transaction is sent. The original error is available as `cause`.
+ * @throws {MinedRevertError} If a submitted transaction is mined with a revert
+ *   status. The reverted hash and status are available as `txHash` and `status`.
+ * @throws {ConfirmationTimeoutError} If no receipt is found after the initial
+ *   send and all escalations. Every submitted hash is available as `txHashes`.
+ * @throws {Error} If the initial send fails after its retry budget. A
+ *   submission may have reached the network, so the outcome is uncertain.
  */
 export async function escalatedSendTransaction(
   web3: Web3,
@@ -789,5 +809,8 @@ export async function escalatedSendTransaction(
   logger.error(
     `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`,
   );
-  throw new ConfirmationTimeoutError(txSettings.maxGasPriceEscalations);
+  throw new ConfirmationTimeoutError(
+    txSettings.maxGasPriceEscalations,
+    txHashes,
+  );
 }
