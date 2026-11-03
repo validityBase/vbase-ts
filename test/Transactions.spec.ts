@@ -26,6 +26,7 @@ import {
   getCompletedTxReceipt,
   isDefiniteRejection,
   isInsufficientFundsError,
+  isPreBroadcastGasRejection,
   PreSubmissionError,
   SubmissionUncertainError,
   MinedRevertError,
@@ -264,13 +265,45 @@ describe("Transactions", () => {
       TEST_HASH2,
     ]).toString();
     try {
+      // Every attempt fails Hardhat's pre-broadcast intrinsic-gas check, so
+      // nothing reached the chain.
       await expect(escalatedSendTransactionWorker(data, 20)).to.be.rejectedWith(
-        Error,
+        PreSubmissionError,
         /Failed to send transaction after/,
       );
     } finally {
       txSettings.nSendTxRetries = savedNSendTxRetries;
     }
+  });
+
+  it("Reports SubmissionUncertainError when a send is mined but runs out of gas", async () => {
+    // Hardhat automine mines the transaction and then reports "ran out of
+    // gas", so gas was spent: this must not be classified as pre-submission.
+    // maxGasLimit pins the limit so the retry cannot succeed.
+    const savedNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 2;
+    const data = encodeFunctionCall(web3, "addSetObject", [
+      TEST_HASH1,
+      TEST_HASH2,
+    ]).toString();
+    const nonceBefore = await ethersWallet.getNonce();
+    try {
+      await expect(
+        escalatedSendTransaction(
+          web3,
+          ethersWallet,
+          commitmentServiceAddress,
+          data,
+          LOGGER,
+          22000, // Enough to pass the intrinsic-gas check, not to execute.
+          22000,
+        ),
+      ).to.be.rejectedWith(SubmissionUncertainError);
+    } finally {
+      txSettings.nSendTxRetries = savedNSendTxRetries;
+    }
+    // Confirms the premise: the failed transaction was mined.
+    expect(await ethersWallet.getNonce()).to.be.greaterThan(nonceBefore);
   });
 
   it("Succeeds via escalatedSendTransaction after gas escalation", async () => {
@@ -1175,6 +1208,29 @@ describe("Transaction recovery error types", () => {
       ).to.equal(true);
     });
 
+    it("treats only pre-broadcast gas checks as definite", () => {
+      // Pool-admission rejections: the transaction was never broadcast.
+      for (const message of [
+        "intrinsic gas too low",
+        "Transaction requires at least 21344 gas but got 20",
+        "exceeds block gas limit",
+        "Transaction gas limit is 40000000 and exceeds block gas limit of 30000000",
+        "max fee per gas less than block base fee",
+      ]) {
+        expect(
+          isPreBroadcastGasRejection(new Error(message)),
+          message,
+        ).to.equal(true);
+        expect(isDefiniteRejection(new Error(message)), message).to.equal(true);
+      }
+      // Execution failure reported after mining: still routed as a gas error
+      // for retry, but not proof that nothing was broadcast.
+      const ranOutOfGas = new Error("Transaction ran out of gas");
+      expect(isGasError(ranOutOfGas)).to.equal(true);
+      expect(isPreBroadcastGasRejection(ranOutOfGas)).to.equal(false);
+      expect(isDefiniteRejection(ranOutOfGas)).to.equal(false);
+    });
+
     it("treats transport failures as ambiguous even when the message looks like a rejection", () => {
       expect(
         isDefiniteRejection({ code: "TIMEOUT", message: "timeout" }),
@@ -1421,6 +1477,29 @@ describe("Transaction recovery error types", () => {
 
       // (1 + 0.99) * interval = 99.5 ms; allow 5 ms for timer granularity.
       expect(await timeSend(makeFailOnceSigner(timeout))).to.be.at.least(94);
+    });
+
+    it("leaves the gas limit unchanged when the block lookup for a gas-limit increase fails", async () => {
+      // The tx object is shared across escalations. A failed increase must
+      // not leave a doubled, uncapped limit for the next escalated send.
+      const signer = {
+        ...makeMockSigner(),
+        provider: {
+          getTransactionCount: async () => 5,
+          getBlock: async () => {
+            throw new Error("rpc unavailable");
+          },
+        },
+        sendTransaction: async () => {
+          throw new Error("intrinsic gas too low");
+        },
+      };
+      const tx = makeTx();
+
+      await expect(
+        sendTxAndWaitForHash(signer as never, tx, false, LOGGER, 150000),
+      ).to.be.rejectedWith(/rpc unavailable/);
+      expect(tx.gasLimit).to.equal(100000);
     });
 
     it("rethrows the raw error on an escalated send", async () => {

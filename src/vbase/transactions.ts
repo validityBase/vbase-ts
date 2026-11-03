@@ -54,8 +54,9 @@ type ErrorWithCause = Error & { cause?: unknown };
  * Thrown by escalatedSendTransaction() when there is positive evidence that no
  * transaction reached the network: fetching the gas price or nonce failed, or
  * every initial send attempt was definitively rejected (e.g. insufficient
- * funds or a gas-limit error). Callers may treat the transaction as not
- * submitted and refund the credit.
+ * funds, or a node's pre-broadcast gas check such as "intrinsic gas too
+ * low"). Callers may treat the transaction as not submitted and refund the
+ * credit.
  */
 export class PreSubmissionError extends Error {
   /**
@@ -191,9 +192,9 @@ async function waitForSendTxRetry(
 // Send-error classification.
 //
 // The classifiers below (isInsufficientFundsError, isNonceError,
-// isReplacementUnderpricedError, isGasError, isDefiniteRejection) decide how
-// a failed send is retried and
-// whether it may have reached the node. Each one reads the ethers error code
+// isReplacementUnderpricedError, isPreBroadcastGasRejection, isGasError,
+// isDefiniteRejection) decide how a failed send is retried and whether it may
+// have reached the node. Each one reads the ethers error code
 // and the node's own rejection reason (see getNodeRejectionReason()), never
 // the full ethers error message: ethers appends the JSON-RPC payload to that
 // message, and for eth_sendTransaction the payload contains the transaction's
@@ -321,16 +322,40 @@ export function isGasStationError(error: any): boolean {
   return msg.includes("gas station") || msg.includes("gasstation");
 }
 
+// Node rejection reasons for gas checks that a node performs before admitting
+// a transaction to its pool, so the transaction was never broadcast.
+const PRE_BROADCAST_GAS_REJECTIONS = [
+  /intrinsic gas too low/i, // geth/Bor
+  /requires at least \d+ gas/i, // Hardhat's intrinsic-gas check
+  /exceeds block gas limit/i, // geth/Bor and Hardhat
+  /max fee per gas less than block base fee/i, // geth/Bor
+];
+
+// Check if the error is a gas rejection from a node's pool-admission checks
+// (see PRE_BROADCAST_GAS_REJECTIONS). Unlike isGasError(), this excludes
+// execution failures such as Hardhat automine's "Transaction ran out of gas",
+// which is reported after the failed transaction was mined. Exported for unit
+// testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isPreBroadcastGasRejection(error: any): boolean {
+  const reason = getNodeRejectionReason(error);
+  return (
+    reason !== undefined &&
+    PRE_BROADCAST_GAS_REJECTIONS.some((pattern) => pattern.test(reason))
+  );
+}
+
 // Determine whether a send error is positive evidence that this attempt did
 // NOT broadcast the transaction: ethers or the node rejected it for a
-// recognized reason (insufficient funds, nonce, replacement underpriced, or
-// gas), judged from the ethers error code and the node's rejection reason.
-// Gas-station failures also count: they occur while ethers populates fee
-// data, before anything is sent.
+// recognized reason (insufficient funds, nonce, replacement underpriced, or a
+// pre-broadcast gas check), judged from the ethers error code and the node's
+// rejection reason. Gas-station failures also count: they occur while ethers
+// populates fee data, before anything is sent.
 // Everything else returns false because the transaction may have been
 // accepted: transport failures (ethers TIMEOUT, NETWORK_ERROR, SERVER_ERROR,
 // etc. carry no node reason), "already known" responses (geth/Bor "already
-// known", Hardhat "Known transaction"), and unrecognized errors.
+// known", Hardhat "Known transaction"), gas errors outside the pre-broadcast
+// allowlist (e.g. a mined "ran out of gas"), and unrecognized errors.
 // Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isDefiniteRejection(error: any): boolean {
@@ -339,15 +364,19 @@ export function isDefiniteRejection(error: any): boolean {
     isInsufficientFundsError(error) ||
     isReplacementUnderpricedError(error) ||
     isNonceError(error) ||
-    isGasError(error)
+    isPreBroadcastGasRejection(error)
   );
 }
 
 // Check if the error is a gas (limit) error: a node reason that mentions gas,
-// matched case-insensitively (e.g. "intrinsic gas too low"). Insufficient-funds
-// rejections are excluded even though geth/Bor phrase them as "insufficient
-// funds for gas * price + value": raising the gas limit would only make the
-// transaction more expensive. Exported for unit testing.
+// matched case-insensitively (e.g. "intrinsic gas too low"). Used to route a
+// retry with a higher gas limit. This deliberately broad match also covers
+// execution failures (e.g. Hardhat automine's "Transaction ran out of gas"),
+// so it does not prove the transaction was not broadcast; see
+// isPreBroadcastGasRejection(). Insufficient-funds rejections are excluded
+// even though geth/Bor phrase them as "insufficient funds for gas * price +
+// value": raising the gas limit would only make the transaction more
+// expensive. Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isGasError(error: any): boolean {
   const reason = getNodeRejectionReason(error);
@@ -366,7 +395,10 @@ async function increaseGasLimit(
   if (!tx.gasLimit) {
     throw new Error("increaseGasLimit(): gasLimit undefined");
   }
-  tx.gasLimit = BigInt(tx.gasLimit.toString()) * BigInt(2);
+  // Compute the new limit locally and write it to the shared tx only after
+  // every check below succeeds. If the block lookup throws, tx keeps its
+  // current limit, so a later escalated send cannot reuse an uncapped value.
+  let gasLimit = BigInt(tx.gasLimit.toString()) * BigInt(2);
 
   // Get the current block number.
   if (signer === null) {
@@ -391,13 +423,14 @@ async function increaseGasLimit(
   }
 
   // Cap the gasLimit at the block gas limit.
-  if (tx.gasLimit > increaseGasLimit.blockGasLimit) {
-    tx.gasLimit = increaseGasLimit.blockGasLimit;
+  if (gasLimit > increaseGasLimit.blockGasLimit) {
+    gasLimit = increaseGasLimit.blockGasLimit;
   }
   // Never exceed the caller's hard ceiling, which bounds the gas cost of a tx.
-  if (maxGasLimit !== undefined && tx.gasLimit > BigInt(maxGasLimit)) {
-    tx.gasLimit = BigInt(maxGasLimit);
+  if (maxGasLimit !== undefined && gasLimit > BigInt(maxGasLimit)) {
+    gasLimit = BigInt(maxGasLimit);
   }
+  tx.gasLimit = gasLimit;
 }
 
 // Attach static variables to the function for caching via a property.
