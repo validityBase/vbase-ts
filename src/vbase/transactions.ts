@@ -27,7 +27,14 @@ import { serializeBigInts } from "./utils.js";
  *      - nonce errors            -> on the initial send refetch the nonce and
  *                                   resend; on an escalated send rethrow so the
  *                                   outer layer can check for prior completion;
- *      - gas (limit) errors      -> increase the gas limit and resend.
+ *      - gas (limit) errors      -> increase the gas limit and resend;
+ *      - gas station errors and
+ *        all other errors        -> back off and resend unchanged.
+ *    Errors are classified by their ethers error code and the node's rejection
+ *    reason, never the full ethers message (see "Send-error classification").
+ *    An initial send that fails throws PreSubmissionError (every attempt was
+ *    definitively rejected) or SubmissionUncertainError (an attempt may have
+ *    reached the node).
  *    It gives up after nSendTxRetries attempts for most errors; productive
  *    "replacement underpriced" fee bumps (where the gas price actually
  *    increases, i.e. still below the maxGasPrice cap) do not count against
@@ -38,6 +45,97 @@ import { serializeBigInts } from "./utils.js";
  * reused across escalations so that escalated sends replace the in-flight
  * transaction rather than creating new ones.
  */
+
+// Error.cause is not in the es2020 lib typings, so it is declared explicitly
+// on the error classes below and set by assignment.
+type ErrorWithCause = Error & { cause?: unknown };
+
+/**
+ * Thrown by escalatedSendTransaction() when there is positive evidence that no
+ * transaction reached the network: fetching the gas price or nonce failed, or
+ * every initial send attempt was definitively rejected (e.g. insufficient
+ * funds, or a node's pre-broadcast gas check such as "intrinsic gas too
+ * low"). Callers may treat the transaction as not submitted and refund the
+ * credit.
+ */
+export class PreSubmissionError extends Error {
+  /**
+   * The underlying error, for inspecting its type, code, and stack. When the
+   * initial send exhausts its retry budget, this is the retry-budget error,
+   * whose own `cause` is the final provider error.
+   */
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    super(
+      `Transaction not submitted: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "PreSubmissionError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Thrown by escalatedSendTransaction() when the initial send never returned a
+ * transaction hash, but at least one attempt failed in a way that does not
+ * rule out the node having accepted the transaction: a timeout, network or
+ * server error, an "already known" response, or any unrecognized error. The
+ * transaction may be pending or mined, so the credit is NOT refunded; check
+ * the account's nonce and pending transactions before resubmitting.
+ */
+export class SubmissionUncertainError extends Error {
+  /** The underlying error; structured as {@link PreSubmissionError.cause}. */
+  readonly cause: unknown;
+  constructor(cause: unknown) {
+    super(
+      `Transaction submission outcome unknown: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "SubmissionUncertainError";
+    this.cause = cause;
+  }
+}
+
+/**
+ * Thrown by escalatedSendTransaction() when a submitted transaction is mined
+ * with a revert status. Gas was spent regardless of the revert, so the credit
+ * is NOT refunded.
+ */
+export class MinedRevertError extends Error {
+  /** Hash of the reverted transaction. */
+  readonly txHash: string;
+  /** The receipt's on-chain status value (e.g. `0n`). */
+  readonly status: unknown;
+  constructor(txHash: string, status: unknown) {
+    super(
+      `Transaction reverted on-chain (status = ${status}): txHash = ${txHash}`,
+    );
+    this.name = "MinedRevertError";
+    this.txHash = txHash;
+    this.status = status;
+  }
+}
+
+/**
+ * Thrown by escalatedSendTransaction() when no receipt is found after the
+ * initial send and all gas-price escalations. The transaction may be pending
+ * or mined, so the outcome is uncertain and the credit is NOT refunded.
+ */
+export class ConfirmationTimeoutError extends Error {
+  /**
+   * Every submitted transaction hash: the initial send and each same-nonce
+   * replacement. At most one can be mined; query their receipts to determine
+   * the outcome before resubmitting.
+   */
+  readonly txHashes: readonly string[];
+  constructor(maxEscalations: number, txHashes: readonly string[]) {
+    super(
+      `Transaction was not confirmed after the initial send and ${maxEscalations} escalation cycles: ` +
+        `txHashes = ${txHashes.join(", ")}`,
+    );
+    this.name = "ConfirmationTimeoutError";
+    // Copy so later mutation of the caller's array cannot change the error.
+    this.txHashes = [...txHashes];
+  }
+}
 
 function verifyTx(tx: TransactionRequest): void {
   // The caller should always set the gasLimit and nonce.
@@ -79,19 +177,72 @@ async function waitForSendTxRetry(
   attempt: number,
   logger: pino.Logger,
 ): Promise<void> {
-  // Wait for the interval before retrying tx submission.
-  // Increase the interval between checks to back off on heavy load.
-  // Add a random factor to avoid collisions with other clients.
+  // Wait before retrying tx submission: a linear backoff of
+  // attempt * waitForSendTxRetryInterval to ease load, plus random jitter of
+  // up to one waitForSendTxRetryInterval so concurrent senders that fail
+  // together (e.g. on the same nonce) do not retry in lockstep.
   const sendTxRetryTimeout =
-    attempt * txSettings.waitForSendTxRetryInterval + Math.random();
+    (attempt + Math.random()) * txSettings.waitForSendTxRetryInterval;
   logger.debug(
     `waitForSendTxRetry(): sendTxRetryTimeout = ${sendTxRetryTimeout}`,
   );
   await new Promise((resolve) => setTimeout(resolve, sendTxRetryTimeout));
 }
 
-// Check if the error is a nonce error.
-// We classify errors in the catch block by parsing their messages, matching
+// Send-error classification.
+//
+// The classifiers below (isInsufficientFundsError, isNonceError,
+// isReplacementUnderpricedError, isPreBroadcastGasRejection, isGasError,
+// isDefiniteRejection) decide how a failed send is retried and whether it may
+// have reached the node. Each one reads the ethers error code
+// and the node's own rejection reason (see getNodeRejectionReason()), never
+// the full ethers error message: ethers appends the JSON-RPC payload to that
+// message, and for eth_sendTransaction the payload contains the transaction's
+// "gas" and "nonce" fields, so every error from a JSON-RPC signer would
+// otherwise look like a nonce and gas error. isGasStationError() is the one
+// exception; see its comment.
+
+// Extract the node's own rejection reason from a send error, or undefined if
+// there is none:
+//   - ethers UNKNOWN_ERROR ("could not coalesce error"): the raw JSON-RPC
+//     error object is on error.error; its message is the node's reason.
+//   - Errors without an ethers string code (e.g. Hardhat's ProviderError,
+//     which carries a numeric JSON-RPC code): the message is the reason.
+//   - Any other ethers code: no reason is extracted. ethers has either
+//     already classified the rejection into that code (e.g.
+//     INSUFFICIENT_FUNDS, NONCE_EXPIRED) or the failure is not a node
+//     rejection at all (e.g. TIMEOUT, NETWORK_ERROR).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getNodeRejectionReason(error: any): string | undefined {
+  if (typeof error?.code !== "string") {
+    return typeof error?.message === "string" ? error.message : undefined;
+  }
+  if (
+    error.code === "UNKNOWN_ERROR" &&
+    typeof error.error?.message === "string"
+  ) {
+    return error.error.message;
+  }
+  return undefined;
+}
+
+// Check if the error is an insufficient-funds rejection: the ethers
+// INSUFFICIENT_FUNDS code, or a node reason containing "insufficient funds"
+// (geth/Bor: "insufficient funds for gas * price + value"). Exported for unit
+// testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isInsufficientFundsError(error: any): boolean {
+  if (error?.code === "INSUFFICIENT_FUNDS") {
+    return true;
+  }
+  const reason = getNodeRejectionReason(error);
+  return (
+    reason !== undefined && reason.toLowerCase().includes("insufficient funds")
+  );
+}
+
+// Check if the error is a nonce error: the ethers NONCE_EXPIRED code
+// ("nonce too low"), or a node reason that mentions the nonce, matched
 // case-insensitively since the wording/capitalization varies across nodes
 // (e.g. "nonce too low" vs "Nonce too low").
 // Note: "replacement underpriced" errors are intentionally NOT treated as nonce
@@ -102,11 +253,11 @@ async function waitForSendTxRetry(
 // Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isNonceError(error: any): boolean {
-  // All errors that mention "nonce" in the message are nonce errors.
-  return (
-    typeof error?.message === "string" &&
-    error.message.toLowerCase().includes("nonce")
-  );
+  if (error?.code === "NONCE_EXPIRED") {
+    return true;
+  }
+  const reason = getNodeRejectionReason(error);
+  return reason !== undefined && reason.toLowerCase().includes("nonce");
 }
 
 // Check if the error is a "replacement transaction underpriced" error.
@@ -126,7 +277,8 @@ export function isNonceError(error: any): boolean {
 // "replacement fee too low" and geth/Bor's "replacement transaction
 // underpriced" both surface as code REPLACEMENT_UNDERPRICED). This is the path
 // taken in production. As a fallback we also match the canonical lowercase
-// messages for nodes/providers that do not set the code.
+// messages in the node's rejection reason for nodes/providers that do not set
+// the code.
 //
 // We deliberately do NOT match case-insensitively. These messages frequently
 // also mention the nonce, and some providers (notably Hardhat) emit a
@@ -143,19 +295,24 @@ export function isReplacementUnderpricedError(error: any): boolean {
   if (error?.code === "REPLACEMENT_UNDERPRICED") {
     return true;
   }
-  if (typeof error?.message !== "string") {
+  const reason = getNodeRejectionReason(error);
+  if (reason === undefined) {
     return false;
   }
   return (
-    error.message.includes("replacement transaction underpriced") ||
-    error.message.includes("replacement fee too low") ||
-    error.message.includes("replacement underpriced")
+    reason.includes("replacement transaction underpriced") ||
+    reason.includes("replacement fee too low") ||
+    reason.includes("replacement underpriced")
   );
 }
 
 // Check if the error is a transient gas station failure (e.g. the Polygon gas
 // station returning non-JSON). These are external-service failures unrelated to
 // the transaction itself; retry with backoff. Exported for unit testing.
+// Unlike the other classifiers, this one matches the full error message: the
+// failure comes from ethers' HTTP request to the gas station, not from the
+// node, so there is no node rejection reason, and the gas station URL appears
+// only in the request details that ethers includes in the message.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isGasStationError(error: any): boolean {
   if (typeof error?.message !== "string") return false;
@@ -165,25 +322,83 @@ export function isGasStationError(error: any): boolean {
   return msg.includes("gas station") || msg.includes("gasstation");
 }
 
-// Check if the error is a low gas error.
-// We classify errors in the catch block by parsing their messages, matching
-// case-insensitively. Exported for unit testing.
+// Node rejection reasons for gas checks that a node performs before admitting
+// a transaction to its pool, so the transaction was never broadcast.
+const PRE_BROADCAST_GAS_REJECTIONS = [
+  /intrinsic gas too low/i, // geth/Bor
+  /requires at least \d+ gas/i, // Hardhat's intrinsic-gas check
+  /exceeds block gas limit/i, // geth/Bor and Hardhat
+  /max fee per gas less than block base fee/i, // geth/Bor
+];
+
+// Check if the error is a gas rejection from a node's pool-admission checks
+// (see PRE_BROADCAST_GAS_REJECTIONS). Unlike isGasError(), this excludes
+// execution failures such as Hardhat automine's "Transaction ran out of gas",
+// which is reported after the failed transaction was mined. Exported for unit
+// testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isPreBroadcastGasRejection(error: any): boolean {
+  const reason = getNodeRejectionReason(error);
+  return (
+    reason !== undefined &&
+    PRE_BROADCAST_GAS_REJECTIONS.some((pattern) => pattern.test(reason))
+  );
+}
+
+// Determine whether a send error is positive evidence that this attempt did
+// NOT broadcast the transaction: ethers or the node rejected it for a
+// recognized reason (insufficient funds, nonce, replacement underpriced, or a
+// pre-broadcast gas check), judged from the ethers error code and the node's
+// rejection reason. Gas-station failures also count: they occur while ethers
+// populates fee data, before anything is sent.
+// Everything else returns false because the transaction may have been
+// accepted: transport failures (ethers TIMEOUT, NETWORK_ERROR, SERVER_ERROR,
+// etc. carry no node reason), "already known" responses (geth/Bor "already
+// known", Hardhat "Known transaction"), gas errors outside the pre-broadcast
+// allowlist (e.g. a mined "ran out of gas"), and unrecognized errors.
+// Exported for unit testing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isDefiniteRejection(error: any): boolean {
+  return (
+    isGasStationError(error) ||
+    isInsufficientFundsError(error) ||
+    isReplacementUnderpricedError(error) ||
+    isNonceError(error) ||
+    isPreBroadcastGasRejection(error)
+  );
+}
+
+// Check if the error is a gas (limit) error: a node reason that mentions gas,
+// matched case-insensitively (e.g. "intrinsic gas too low"). Used to route a
+// retry with a higher gas limit. This deliberately broad match also covers
+// execution failures (e.g. Hardhat automine's "Transaction ran out of gas"),
+// so it does not prove the transaction was not broadcast; see
+// isPreBroadcastGasRejection(). Insufficient-funds rejections are excluded
+// even though geth/Bor phrase them as "insufficient funds for gas * price +
+// value": raising the gas limit would only make the transaction more
+// expensive. Exported for unit testing.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function isGasError(error: any): boolean {
+  const reason = getNodeRejectionReason(error);
   return (
-    typeof error?.message === "string" &&
-    error.message.toLowerCase().includes("gas")
+    reason !== undefined &&
+    reason.toLowerCase().includes("gas") &&
+    !isInsufficientFundsError(error)
   );
 }
 
 async function increaseGasLimit(
   tx: TransactionRequest,
   signer: Signer,
+  maxGasLimit?: number,
 ): Promise<void> {
   if (!tx.gasLimit) {
     throw new Error("increaseGasLimit(): gasLimit undefined");
   }
-  tx.gasLimit = BigInt(tx.gasLimit.toString()) * BigInt(2);
+  // Compute the new limit locally and write it to the shared tx only after
+  // every check below succeeds. If the block lookup throws, tx keeps its
+  // current limit, so a later escalated send cannot reuse an uncapped value.
+  let gasLimit = BigInt(tx.gasLimit.toString()) * BigInt(2);
 
   // Get the current block number.
   if (signer === null) {
@@ -208,9 +423,14 @@ async function increaseGasLimit(
   }
 
   // Cap the gasLimit at the block gas limit.
-  if (tx.gasLimit > increaseGasLimit.blockGasLimit) {
-    tx.gasLimit = increaseGasLimit.blockGasLimit;
+  if (gasLimit > increaseGasLimit.blockGasLimit) {
+    gasLimit = increaseGasLimit.blockGasLimit;
   }
+  // Never exceed the caller's hard ceiling, which bounds the gas cost of a tx.
+  if (maxGasLimit !== undefined && gasLimit > BigInt(maxGasLimit)) {
+    gasLimit = BigInt(maxGasLimit);
+  }
+  tx.gasLimit = gasLimit;
 }
 
 // Attach static variables to the function for caching via a property.
@@ -218,12 +438,56 @@ async function increaseGasLimit(
 increaseGasLimit.blockGasLimit = null as bigint | null;
 increaseGasLimit.lastBlockNumber = null as number | null;
 
-// Exported for unit testing.
+// Sends the transaction, retrying transient errors, and returns its hash.
+// On the initial send, any failure is classified for the caller's refund
+// decision: SubmissionUncertainError if any attempt may have reached the
+// node (see isDefiniteRejection()), otherwise PreSubmissionError. On an
+// escalated send the raw error is rethrown so escalatedSendTransaction() can
+// check whether a prior transaction completed. Exported for unit testing.
 export async function sendTxAndWaitForHash(
   signer: Signer,
   tx: TransactionRequest,
   initialSend: boolean,
   logger: pino.Logger,
+  maxGasLimit?: number,
+): Promise<string> {
+  const attempts: SendAttemptState = { possiblyBroadcast: false };
+  try {
+    return await sendTxWithRetries(
+      signer,
+      tx,
+      initialSend,
+      logger,
+      attempts,
+      maxGasLimit,
+    );
+  } catch (error) {
+    if (!initialSend) {
+      throw error;
+    }
+    throw attempts.possiblyBroadcast
+      ? new SubmissionUncertainError(error)
+      : new PreSubmissionError(error);
+  }
+}
+
+// Evidence collected across send attempts.
+interface SendAttemptState {
+  // True once any attempt failed with an error that does not rule out the
+  // node having accepted the transaction.
+  possiblyBroadcast: boolean;
+  // The most recent attempt's error, attached as the retry-budget error's
+  // cause so the provider's code, type, and stack are preserved.
+  lastError?: unknown;
+}
+
+async function sendTxWithRetries(
+  signer: Signer,
+  tx: TransactionRequest,
+  initialSend: boolean,
+  logger: pino.Logger,
+  attempts: SendAttemptState,
+  maxGasLimit?: number,
 ): Promise<string> {
   logger.debug("> sendTxAndWaitForHash()");
   // totalAttempts: monotonically increasing count of all send attempts,
@@ -264,6 +528,10 @@ export async function sendTxAndWaitForHash(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       logger.error(`sendTxAndWaitForHash(): error = ${error}`);
+      attempts.lastError = error;
+      if (!isDefiniteRejection(error)) {
+        attempts.possiblyBroadcast = true;
+      }
       // Handle "replacement underpriced" first, before the nonce check, since
       // these messages often also mention the nonce and would otherwise be
       // misrouted to the nonce path.
@@ -399,18 +667,28 @@ export async function sendTxAndWaitForHash(
         // If the error complains about gas, increase the gas limit and retry.
         // We do not need to wait before retrying since only the gas limit is updated
         // and there is no evidence we are racing with other txs.
-        await increaseGasLimit(tx, signer);
+        await increaseGasLimit(tx, signer, maxGasLimit);
         logger.info(
           `sendTxAndWaitForHash(): Retrying with increased gasLimit = ${tx.gasLimit}`,
         );
         continue;
       }
+      // Any other error (a transport failure, an "already known" response,
+      // insufficient funds, or an unrecognized node error) has no specific
+      // remedy. Back off before resending the same transaction so a transient
+      // outage does not exhaust the retry budget in a tight loop.
+      await waitForSendTxRetry(totalAttempts, logger);
+      logger.info(
+        "sendTxAndWaitForHash(): unclassified error, retrying after backoff",
+      );
     }
   }
 
   const error_msg = `sendTxAndWaitForHash(): Failed to send transaction after ${totalAttempts} attempts (${txSettings.nSendTxRetries} retry budget)`;
   logger.error(error_msg);
-  throw new Error(error_msg);
+  const exhaustedError: ErrorWithCause = new Error(error_msg);
+  exhaustedError.cause = attempts.lastError;
+  throw exhaustedError;
 }
 
 async function sendAndSaveTxHash(
@@ -419,11 +697,18 @@ async function sendAndSaveTxHash(
   txHashes: string[],
   initialSend: boolean,
   logger: pino.Logger,
+  maxGasLimit?: number,
 ): Promise<void> {
   logger.debug("> sendAndSaveTxHash()");
   let txHash: string;
   try {
-    txHash = await sendTxAndWaitForHash(signer, tx, initialSend, logger);
+    txHash = await sendTxAndWaitForHash(
+      signer,
+      tx,
+      initialSend,
+      logger,
+      maxGasLimit,
+    );
     logger.debug(`sendAndSaveTxHash(): txHash = ${txHash}`);
     txHashes.push(txHash);
   } catch (error) {
@@ -529,7 +814,7 @@ export async function getCompletedTxReceipt(
       receipt = await web3.eth.getTransactionReceipt(txHash);
     } catch (error) {
       logger.error(
-        `getCompletedTxReceipt(): getTransactionReceipt(): error = ${JSON.stringify(error)}`,
+        `getCompletedTxReceipt(): getTransactionReceipt(): error = ${error}`,
       );
     }
     logger.debug(
@@ -548,11 +833,11 @@ export async function getCompletedTxReceipt(
       // escalating/polling further would only end in a generic timeout. Fail
       // fast with a clear, actionable error instead. (At most one tx per nonce
       // can be mined, so a reverted tracked tx is the definitive outcome.)
-      const error_msg =
+      logger.error(
         "getCompletedTxReceipt(): transaction reverted on-chain " +
-        `(status = ${receipt.status}): txHash = ${txHash}`;
-      logger.error(error_msg);
-      throw new Error(error_msg);
+          `(status = ${receipt.status}): txHash = ${txHash}`,
+      );
+      throw new MinedRevertError(txHash, receipt.status);
     }
   }
 
@@ -580,10 +865,21 @@ async function waitForTxCompletionCheck(
  * @param {string} data - The encoded transaction data.
  * @param {pino.Logger} logger - The logger instance for debugging and error tracking.
  * @param {number} [gasLimit] - Optional gas limit for the transaction.
+ * @param {number} [maxGasLimit] - Optional hard ceiling for the gas limit. The
+ *   initial gas limit and every gas-limit increase on retry are capped at it.
  *
  * @returns {Promise<TransactionReceipt>} - A promise that resolves to the transaction receipt.
  *
- * @throws {Error} If the transaction fails to send or encounters an error.
+ * @throws {PreSubmissionError} If fetching the gas price or nonce fails, or
+ *   every initial send attempt was definitively rejected, so no transaction
+ *   reached the network. The original error is available as `cause`.
+ * @throws {SubmissionUncertainError} If the initial send fails but an attempt
+ *   may have reached the node (e.g. a timeout). The transaction may be pending
+ *   or mined. The original error is available as `cause`.
+ * @throws {MinedRevertError} If a submitted transaction is mined with a revert
+ *   status. The reverted hash and status are available as `txHash` and `status`.
+ * @throws {ConfirmationTimeoutError} If no receipt is found after the initial
+ *   send and all escalations. Every submitted hash is available as `txHashes`.
  */
 export async function escalatedSendTransaction(
   web3: Web3,
@@ -592,6 +888,7 @@ export async function escalatedSendTransaction(
   data: string,
   logger: pino.Logger,
   gasLimit?: number,
+  maxGasLimit?: number,
 ): Promise<TransactionReceipt> {
   logger.debug("> escalatedSendTransaction()");
   logger.debug(
@@ -601,9 +898,19 @@ export async function escalatedSendTransaction(
   if (gasLimit === undefined) {
     gasLimit = estimateGasLimit(data, logger);
   }
+  if (maxGasLimit !== undefined) {
+    gasLimit = Math.min(gasLimit, maxGasLimit);
+  }
 
-  // Calculate an aggressive gas price premium for the initial tx.
-  const currentGasPrice = await web3.eth.getGasPrice();
+  // Fetch gas price and nonce before any sendTransaction() call.
+  // Wrap both in PreSubmissionError so callers have positive evidence that
+  // no transaction reached the network if either fails.
+  let currentGasPrice: bigint;
+  try {
+    currentGasPrice = await web3.eth.getGasPrice();
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
   logger.debug(
     `escalatedSendTransaction(): currentGasPrice = ${currentGasPrice}`,
   );
@@ -619,7 +926,12 @@ export async function escalatedSendTransaction(
   // could get the same nonce and one of them will fail with nonce too low.
   // We address this by updating nonce on failure and retrying,
   // but this is inefficient and could be avoided with a global counter.
-  const nonce = await getNonce(signer);
+  let nonce: number;
+  try {
+    nonce = await getNonce(signer);
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
   logger.debug(`escalatedSendTransaction(): nonce = ${nonce}`);
 
   const tx = {
@@ -645,7 +957,9 @@ export async function escalatedSendTransaction(
   // Send the initial tx.
   // Note that the initial tx may have its nonce updated
   // if a prior tx has completed and updated the nonce.
-  await sendAndSaveTxHash(signer, tx, txHashes, true, logger);
+  // A failure here throws PreSubmissionError or SubmissionUncertainError,
+  // classified by sendTxAndWaitForHash().
+  await sendAndSaveTxHash(signer, tx, txHashes, true, logger, maxGasLimit);
   logger.debug(
     `escalatedSendTransaction(): After sendAndSaveTxHash() tx = ${JSON.stringify(serializeBigInts(tx))}`,
   );
@@ -701,7 +1015,14 @@ export async function escalatedSendTransaction(
       // Send the escalated tx.
       // The tx will be submitted with the initial or updated nonce.
       try {
-        await sendAndSaveTxHash(signer, tx, txHashes, false, logger);
+        await sendAndSaveTxHash(
+          signer,
+          tx,
+          txHashes,
+          false,
+          logger,
+          maxGasLimit,
+        );
       } catch (error) {
         logger.error(
           `escalatedSendTransaction(): sendAndSaveTxHash(): error = ${error}`,
@@ -731,7 +1052,11 @@ export async function escalatedSendTransaction(
     }
   }
 
-  const error_msg = `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`;
-  logger.error(error_msg);
-  throw new Error(error_msg);
+  logger.error(
+    `Transaction was not confirmed after the initial send and ${txSettings.maxGasPriceEscalations} escalation cycles.`,
+  );
+  throw new ConfirmationTimeoutError(
+    txSettings.maxGasPriceEscalations,
+    txHashes,
+  );
 }

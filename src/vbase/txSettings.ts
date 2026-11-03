@@ -51,7 +51,7 @@ const txSettings = {
   /**
    * Maximum number of gas price escalations before giving up.
    *
-   * @default 5
+   * @default 10
    */
   maxGasPriceEscalations: settingsEnv.maxGasPriceEscalations || 10,
 
@@ -74,12 +74,14 @@ const txSettings = {
   /**
    * Maximum number of retries when attempting to send a transaction.
    *
-   * @default 5
+   * @default 10
    */
   nSendTxRetries: settingsEnv.nSendTxRetries || 10,
 
   /**
    * Interval for retrying to send a transaction (in milliseconds).
+   * Retry n waits n times this interval plus random jitter of up to one
+   * interval.
    *
    * @default 1000 (1 second)
    */
