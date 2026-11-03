@@ -54,13 +54,19 @@ export class PreSubmissionError extends Error {
 
 // Thrown when a transaction is confirmed on-chain with a revert status.
 // Gas was spent by the forwarder regardless of the revert; the credit is
-// NOT refunded.
+// NOT refunded. The reverted transaction hash and on-chain status are exposed
+// as typed properties so recovery code can act on them without parsing the
+// human-readable message.
 export class MinedRevertError extends Error {
+  readonly txHash: string;
+  readonly status: unknown;
   constructor(txHash: string, status: unknown) {
     super(
       `Transaction reverted on-chain (status = ${status}): txHash = ${txHash}`,
     );
     this.name = "MinedRevertError";
+    this.txHash = txHash;
+    this.status = status;
   }
 }
 

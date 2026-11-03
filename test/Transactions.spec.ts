@@ -18,6 +18,9 @@ import {
   capGasPrice,
   mulGasPriceByFactor,
   getCompletedTxReceipt,
+  PreSubmissionError,
+  MinedRevertError,
+  ConfirmationTimeoutError,
 } from "../src/vbase/transactions";
 import txSettings from "../src/vbase/txSettings";
 
@@ -933,5 +936,132 @@ describe("Transaction helpers", () => {
 
       expect(receipt).to.equal(null);
     });
+  });
+});
+
+// Deterministic tests verifying that the three exported error types are thrown
+// as the correct instances. These use mock signers/web3 so they run without a
+// contract deployment.
+describe("Transaction recovery error types", () => {
+  const SIGNER_ADDRESS = "0x0000000000000000000000000000000000000001";
+  const TO_ADDRESS = "0x0000000000000000000000000000000000000002";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeMockSigner(nonce = 5): any {
+    return {
+      provider: { getTransactionCount: async () => nonce },
+      getAddress: async () => SIGNER_ADDRESS,
+      sendTransaction: async () => ({ hash: "0xsuccess" }),
+    };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeMockWeb3(gasPrice = 1000n): any {
+    return {
+      eth: {
+        getGasPrice: async () => gasPrice,
+        getTransactionReceipt: async () => null,
+      },
+    };
+  }
+
+  const defaultMaxGasPriceEscalations = txSettings.maxGasPriceEscalations;
+
+  beforeEach(() => {
+    // Collapse the escalation loop so these tests run without delays.
+    txSettings.maxGasPriceEscalations = 0;
+  });
+
+  afterEach(() => {
+    txSettings.maxGasPriceEscalations = defaultMaxGasPriceEscalations;
+  });
+
+  it("escalatedSendTransaction throws PreSubmissionError when gas-price fetch fails", async () => {
+    const web3 = {
+      eth: {
+        getGasPrice: async () => {
+          throw new Error("gas station unreachable");
+        },
+        getTransactionReceipt: async () => null,
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await escalatedSendTransaction(
+        web3 as never,
+        makeMockSigner(),
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).to.be.instanceOf(PreSubmissionError);
+  });
+
+  it("escalatedSendTransaction throws PreSubmissionError when nonce fetch fails", async () => {
+    const signer = {
+      provider: {
+        getTransactionCount: async () => {
+          throw new Error("rpc unavailable");
+        },
+      },
+      getAddress: async () => SIGNER_ADDRESS,
+      sendTransaction: async () => ({ hash: "0xshould-not-reach" }),
+    };
+
+    let caught: unknown;
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        signer as never,
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).to.be.instanceOf(PreSubmissionError);
+  });
+
+  it("escalatedSendTransaction throws ConfirmationTimeoutError when the escalation loop exhausts", async () => {
+    let caught: unknown;
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        makeMockSigner(),
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).to.be.instanceOf(ConfirmationTimeoutError);
+  });
+
+  it("getCompletedTxReceipt throws MinedRevertError with typed txHash and status properties", async () => {
+    const web3 = {
+      eth: {
+        getTransactionReceipt: async (txHash: string) => ({
+          status: 0n,
+          transactionHash: txHash,
+        }),
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await getCompletedTxReceipt(web3 as never, [TEST_HASH1], LOGGER);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).to.be.instanceOf(MinedRevertError);
+    const err = caught as MinedRevertError;
+    expect(err.txHash).to.equal(TEST_HASH1);
+    expect(err.status).to.equal(0n);
   });
 });
