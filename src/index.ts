@@ -3,6 +3,7 @@ export {
   escalatedSendTransaction,
   estimateGasLimit,
   PreSubmissionError,
+  SubmissionUncertainError,
   MinedRevertError,
   ConfirmationTimeoutError,
 } from "./vbase/transactions.js";

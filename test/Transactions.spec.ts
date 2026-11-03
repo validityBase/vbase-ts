@@ -1,5 +1,11 @@
 import { expect } from "chai";
-import { EventLog, type Signer, Wallet, zeroPadBytes } from "ethers";
+import {
+  EventLog,
+  JsonRpcProvider,
+  type Signer,
+  Wallet,
+  zeroPadBytes,
+} from "ethers";
 import hre from "hardhat";
 import { Web3 } from "web3";
 
@@ -18,11 +24,15 @@ import {
   capGasPrice,
   mulGasPriceByFactor,
   getCompletedTxReceipt,
+  isDefiniteRejection,
+  isInsufficientFundsError,
   PreSubmissionError,
+  SubmissionUncertainError,
   MinedRevertError,
   ConfirmationTimeoutError,
 } from "../src/vbase/transactions";
 import txSettings from "../src/vbase/txSettings";
+import * as sdk from "../src/index";
 
 import {
   TEST_HASH1,
@@ -936,6 +946,19 @@ describe("Transaction helpers", () => {
 
       expect(receipt).to.equal(null);
     });
+
+    it("returns null when the receipt lookup throws an error that cannot be JSON-serialized", async () => {
+      // A lookup failure is logged and treated as "no receipt yet". Logging
+      // must not throw (JSON.stringify throws on bigint fields), or the error
+      // would escape escalatedSendTransaction() after the tx was submitted.
+      const web3 = makeMockWeb3(async () => {
+        throw Object.assign(new Error("rpc failure"), { gasPrice: 1000n });
+      });
+
+      const receipt = await getCompletedTxReceipt(web3, [TEST_HASH1], LOGGER);
+
+      expect(receipt).to.equal(null);
+    });
   });
 });
 
@@ -1059,7 +1082,387 @@ describe("Transaction recovery error types", () => {
       txSettings.nSendTxRetries = defaultNSendTxRetries;
     }
     expect(caught).to.be.instanceOf(PreSubmissionError);
-    expect((caught as PreSubmissionError).cause).to.be.instanceOf(Error);
+    // cause is the retry-budget error; its cause is the final provider error.
+    const budgetError = (caught as PreSubmissionError).cause as Error & {
+      cause?: unknown;
+    };
+    expect(budgetError.message).to.match(/Failed to send transaction after/);
+    expect(budgetError.cause).to.equal(providerError);
+  });
+
+  it("escalatedSendTransaction throws SubmissionUncertainError when an initial send attempt may have reached the node", async () => {
+    const defaultNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 2;
+    // Attempt 1 times out after the node may have accepted the tx; attempt 2
+    // is rejected as already known. Neither rules out a broadcast.
+    const timeoutError = Object.assign(new Error("request timeout"), {
+      code: "TIMEOUT",
+    });
+    const alreadyKnownError = new Error("already known");
+    const errors = [timeoutError, alreadyKnownError];
+    const signer = {
+      ...makeMockSigner(),
+      sendTransaction: async () => {
+        throw errors.shift();
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await escalatedSendTransaction(
+        makeMockWeb3(),
+        signer as never,
+        TO_ADDRESS,
+        "0x",
+        LOGGER,
+      );
+    } catch (e) {
+      caught = e;
+    } finally {
+      txSettings.nSendTxRetries = defaultNSendTxRetries;
+    }
+    expect(caught).to.be.instanceOf(SubmissionUncertainError);
+    const budgetError = (caught as SubmissionUncertainError).cause as Error & {
+      cause?: unknown;
+    };
+    expect(budgetError.cause).to.equal(alreadyKnownError);
+  });
+
+  it("sendTxAndWaitForHash reports SubmissionUncertainError when an ambiguous attempt precedes a definite rejection", async () => {
+    const defaultNSendTxRetries = txSettings.nSendTxRetries;
+    txSettings.nSendTxRetries = 2;
+    // A definite rejection on a later attempt does not clear the evidence
+    // that an earlier attempt may have been broadcast.
+    const errors = [
+      Object.assign(new Error("connection reset"), { code: "NETWORK_ERROR" }),
+      Object.assign(new Error("insufficient funds"), {
+        code: "INSUFFICIENT_FUNDS",
+      }),
+    ];
+    const signer = {
+      ...makeMockSigner(),
+      sendTransaction: async () => {
+        throw errors.shift();
+      },
+    };
+    const tx = { to: TO_ADDRESS, gasLimit: 100000, gasPrice: 1000n, nonce: 5 };
+
+    try {
+      await expect(
+        sendTxAndWaitForHash(signer as never, tx, true, LOGGER),
+      ).to.be.rejectedWith(SubmissionUncertainError);
+    } finally {
+      txSettings.nSendTxRetries = defaultNSendTxRetries;
+    }
+  });
+
+  describe("isDefiniteRejection", () => {
+    it("treats recognized node rejections as definite", () => {
+      expect(isDefiniteRejection({ code: "INSUFFICIENT_FUNDS" })).to.equal(
+        true,
+      );
+      expect(isDefiniteRejection({ code: "NONCE_EXPIRED" })).to.equal(true);
+      expect(isDefiniteRejection({ code: "REPLACEMENT_UNDERPRICED" })).to.equal(
+        true,
+      );
+      expect(isDefiniteRejection(new Error("intrinsic gas too low"))).to.equal(
+        true,
+      );
+      expect(
+        isDefiniteRejection(
+          new Error("insufficient funds for intrinsic transaction cost"),
+        ),
+      ).to.equal(true);
+    });
+
+    it("treats transport failures as ambiguous even when the message looks like a rejection", () => {
+      expect(
+        isDefiniteRejection({ code: "TIMEOUT", message: "timeout" }),
+      ).to.equal(false);
+      expect(
+        isDefiniteRejection({
+          code: "SERVER_ERROR",
+          message: "bad response; nonce in payload",
+        }),
+      ).to.equal(false);
+    });
+
+    it("treats already-known and unrecognized errors as ambiguous", () => {
+      expect(isDefiniteRejection(new Error("already known"))).to.equal(false);
+      expect(isDefiniteRejection(new Error("fetch failed"))).to.equal(false);
+      expect(isDefiniteRejection(undefined)).to.equal(false);
+    });
+
+    it("treats gas-station failures as definite (they precede broadcast)", () => {
+      expect(
+        isDefiniteRejection({
+          code: "SERVER_ERROR",
+          message: "bad response from gasstation.polygon.technology",
+        }),
+      ).to.equal(true);
+    });
+
+    // Regression: ethers appends the JSON-RPC payload to the error message.
+    // For eth_sendTransaction that payload includes the transaction's "gas"
+    // and "nonce" fields, so classifying on the full message would treat an
+    // "already known" response as a definite rejection.
+    describe("with errors wrapped by ethers JsonRpcProvider", () => {
+      const provider = new JsonRpcProvider("http://127.0.0.1:1", undefined, {
+        staticNetwork: true,
+      });
+      after(() => provider.destroy());
+
+      function ethersSendError(method: string, nodeMessage: string): Error {
+        const sendTxParams = {
+          from: SIGNER_ADDRESS,
+          to: TO_ADDRESS,
+          gas: "0x5208",
+          gasPrice: "0x3e8",
+          nonce: "0x5",
+          data: "0x",
+        };
+        const rawTx = "0xf86b05843b9aca00825208";
+        const params = [
+          method === "eth_sendTransaction" ? sendTxParams : rawTx,
+        ];
+        return provider.getRpcError(
+          { method, params, id: 1, jsonrpc: "2.0" },
+          { id: 1, error: { code: -32000, message: nodeMessage } },
+        );
+      }
+
+      for (const method of ["eth_sendTransaction", "eth_sendRawTransaction"]) {
+        it(`treats "already known" as ambiguous (${method})`, () => {
+          const error = ethersSendError(method, "already known");
+          if (method === "eth_sendTransaction") {
+            // Guard the premise: the full message carries the payload fields.
+            expect(error.message).to.match(/"gas"/);
+            expect(error.message).to.match(/"nonce"/);
+          }
+          expect(isDefiniteRejection(error)).to.equal(false);
+        });
+
+        it(`treats a node gas rejection as definite (${method})`, () => {
+          expect(
+            isDefiniteRejection(
+              ethersSendError(method, "intrinsic gas too low"),
+            ),
+          ).to.equal(true);
+        });
+
+        it(`treats ethers-coded rejections as definite (${method})`, () => {
+          expect(
+            isDefiniteRejection(ethersSendError(method, "insufficient funds")),
+          ).to.equal(true);
+          expect(
+            isDefiniteRejection(ethersSendError(method, "nonce too low")),
+          ).to.equal(true);
+        });
+      }
+
+      it("reports SubmissionUncertainError when every attempt is an ethers-wrapped already-known error", async () => {
+        const defaultNSendTxRetries = txSettings.nSendTxRetries;
+        txSettings.nSendTxRetries = 1;
+        const signer = {
+          ...makeMockSigner(),
+          sendTransaction: async () => {
+            throw ethersSendError("eth_sendTransaction", "already known");
+          },
+        };
+        const tx = {
+          to: TO_ADDRESS,
+          gasLimit: 100000,
+          gasPrice: 1000n,
+          nonce: 5,
+        };
+
+        try {
+          await expect(
+            sendTxAndWaitForHash(signer as never, tx, true, LOGGER),
+          ).to.be.rejectedWith(SubmissionUncertainError);
+        } finally {
+          txSettings.nSendTxRetries = defaultNSendTxRetries;
+        }
+      });
+
+      // The retry-routing classifiers must also ignore the payload fields in
+      // the full ethers message.
+      for (const method of ["eth_sendTransaction", "eth_sendRawTransaction"]) {
+        it(`routing classifiers ignore payload fields in the message (${method})`, () => {
+          const alreadyKnown = ethersSendError(method, "already known");
+          expect(isNonceError(alreadyKnown)).to.equal(false);
+          expect(isGasError(alreadyKnown)).to.equal(false);
+          expect(isReplacementUnderpricedError(alreadyKnown)).to.equal(false);
+          expect(isInsufficientFundsError(alreadyKnown)).to.equal(false);
+        });
+
+        it(`routing classifiers read the node's rejection reason (${method})`, () => {
+          // ethers leaves these as UNKNOWN_ERROR; the reason is on error.error.
+          expect(
+            isNonceError(ethersSendError(method, "nonce too high")),
+          ).to.equal(true);
+          expect(
+            isGasError(ethersSendError(method, "intrinsic gas too low")),
+          ).to.equal(true);
+          // ethers classifies these into codes.
+          expect(
+            isNonceError(ethersSendError(method, "nonce too low")),
+          ).to.equal(true);
+          expect(
+            isReplacementUnderpricedError(
+              ethersSendError(method, "replacement transaction underpriced"),
+            ),
+          ).to.equal(true);
+          const funds = ethersSendError(
+            method,
+            "insufficient funds for gas * price + value",
+          );
+          expect(isInsufficientFundsError(funds)).to.equal(true);
+          expect(isGasError(funds)).to.equal(false);
+        });
+      }
+
+      it("retries an ethers-wrapped already-known error without refetching the nonce or raising the gas limit", async () => {
+        const defaultNSendTxRetries = txSettings.nSendTxRetries;
+        const defaultRetryInterval = txSettings.waitForSendTxRetryInterval;
+        txSettings.nSendTxRetries = 2;
+        txSettings.waitForSendTxRetryInterval = 1;
+        let nonceFetches = 0;
+        const sentGasLimits: unknown[] = [];
+        const signer = {
+          ...makeMockSigner(),
+          provider: {
+            getTransactionCount: async () => {
+              nonceFetches += 1;
+              return 5;
+            },
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          sendTransaction: async (sentTx: any) => {
+            sentGasLimits.push(sentTx.gasLimit);
+            throw ethersSendError("eth_sendTransaction", "already known");
+          },
+        };
+        const tx = {
+          to: TO_ADDRESS,
+          gasLimit: 100000,
+          gasPrice: 1000n,
+          nonce: 5,
+        };
+
+        try {
+          await expect(
+            sendTxAndWaitForHash(signer as never, tx, true, LOGGER),
+          ).to.be.rejectedWith(SubmissionUncertainError);
+        } finally {
+          txSettings.nSendTxRetries = defaultNSendTxRetries;
+          txSettings.waitForSendTxRetryInterval = defaultRetryInterval;
+        }
+        expect(nonceFetches).to.equal(0);
+        expect(sentGasLimits).to.deep.equal([100000, 100000]);
+        expect(tx.nonce).to.equal(5);
+      });
+    });
+  });
+
+  describe("sendTxAndWaitForHash retry behavior", () => {
+    const defaultNSendTxRetries = txSettings.nSendTxRetries;
+    const defaultRetryInterval = txSettings.waitForSendTxRetryInterval;
+    const realRandom = Math.random;
+
+    afterEach(() => {
+      txSettings.nSendTxRetries = defaultNSendTxRetries;
+      txSettings.waitForSendTxRetryInterval = defaultRetryInterval;
+      Math.random = realRandom;
+    });
+
+    function makeTx() {
+      return { to: TO_ADDRESS, gasLimit: 100000, gasPrice: 1000n, nonce: 5 };
+    }
+
+    // Signer whose first send fails with `firstError` and second succeeds.
+    function makeFailOnceSigner(firstError: unknown) {
+      let calls = 0;
+      return {
+        ...makeMockSigner(),
+        sendTransaction: async () => {
+          calls += 1;
+          if (calls === 1) throw firstError;
+          return { hash: "0xafter-retry" };
+        },
+      };
+    }
+
+    async function timeSend(signer: unknown): Promise<number> {
+      const start = Date.now();
+      const hash = await sendTxAndWaitForHash(
+        signer as never,
+        makeTx(),
+        true,
+        LOGGER,
+      );
+      expect(hash).to.equal("0xafter-retry");
+      return Date.now() - start;
+    }
+
+    it("backs off before retrying an unclassified error", async () => {
+      txSettings.waitForSendTxRetryInterval = 50;
+      Math.random = () => 0;
+      const timeout = Object.assign(new Error("timeout"), { code: "TIMEOUT" });
+
+      // First retry waits 1 * interval; allow 5 ms for timer granularity.
+      expect(await timeSend(makeFailOnceSigner(timeout))).to.be.at.least(45);
+    });
+
+    it("adds random jitter of up to one retry interval", async () => {
+      txSettings.waitForSendTxRetryInterval = 50;
+      Math.random = () => 0.99;
+      const timeout = Object.assign(new Error("timeout"), { code: "TIMEOUT" });
+
+      // (1 + 0.99) * interval = 99.5 ms; allow 5 ms for timer granularity.
+      expect(await timeSend(makeFailOnceSigner(timeout))).to.be.at.least(94);
+    });
+
+    it("rethrows the raw error on an escalated send", async () => {
+      // escalatedSendTransaction() inspects the raw error to check whether a
+      // prior transaction completed, so escalated sends must not wrap it.
+      const nonceError = new Error("nonce too low");
+      const signer = {
+        ...makeMockSigner(),
+        sendTransaction: async () => {
+          throw nonceError;
+        },
+      };
+
+      let caught: unknown;
+      try {
+        await sendTxAndWaitForHash(signer as never, makeTx(), false, LOGGER);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).to.equal(nonceError);
+    });
+  });
+
+  it("exports the recovery error types from the public entry point", () => {
+    expect(sdk.PreSubmissionError).to.equal(PreSubmissionError);
+    expect(sdk.SubmissionUncertainError).to.equal(SubmissionUncertainError);
+    expect(sdk.MinedRevertError).to.equal(MinedRevertError);
+    expect(sdk.ConfirmationTimeoutError).to.equal(ConfirmationTimeoutError);
+  });
+
+  describe("isGasError and isInsufficientFundsError with node reasons", () => {
+    it("does not treat a geth insufficient-funds reason as a gas error", () => {
+      const error = new Error("insufficient funds for gas * price + value");
+      expect(isInsufficientFundsError(error)).to.equal(true);
+      expect(isGasError(error)).to.equal(false);
+    });
+
+    it("treats the ethers INSUFFICIENT_FUNDS code as insufficient funds", () => {
+      expect(isInsufficientFundsError({ code: "INSUFFICIENT_FUNDS" })).to.equal(
+        true,
+      );
+    });
   });
 
   it("escalatedSendTransaction never raises the gas limit above maxGasLimit", async () => {
