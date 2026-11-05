@@ -1,6 +1,6 @@
-import dotenv from "dotenv";
-
-dotenv.config();
+// Settings are read from the process environment only. As a library, vbase-ts
+// does not load .env files: that would merge the caller's .env into whatever
+// configuration the caller chose. Callers load their own env files.
 
 // To set multiple values using a single environment variable we use a JSON string.
 // This allows us to define complex configurations in a structured manner.
