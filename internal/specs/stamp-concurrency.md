@@ -13,3 +13,11 @@ account, not the separately signed `forwardRequest.from` user. Coordination acro
 forwarder processes and app instances remains a shared server rollout prerequisite.
 
 Run `npm test` for the native queue tests and existing Hardhat suite.
+
+Native tests exercise the exported wrapper with distinct signer instances and
+address casing, hold receipt completion, verify release after rejection, and allow
+different chains/accounts to complete while another receipt is pending.
+
+The native tests live outside Hardhat discovery so their temporary settings do
+not overlap Mocha integration tests. Run them after the build with
+`node --test unit-tests/UserTransactionQueue.test.mjs`.
