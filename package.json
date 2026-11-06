@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "docs:build": "typedoc src/index.ts --plugin typedoc-plugin-markdown --out ./_docs",
     "postinstall": "npm run build",
-    "test": "hardhat test",
+    "test": "npm run build && node --test test/*.test.mjs && hardhat test",
     "test:spec:localhost": "hardhat --network localhost test test/Transactions.spec.ts",
     "test:stress": "hardhat test test/Transactions.stress.ts",
     "test:stress:proxy": "hardhat --network localhost_proxy test test/Transactions.stress.ts",
