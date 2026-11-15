@@ -1,4 +1,4 @@
-vBase Python Software Development Kit (SDK)
+vBase TypeScript Software Development Kit (SDK)
 Copyright 2023-2026 PIT Labs Inc. or its affiliates. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License"), except
