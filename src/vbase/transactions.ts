@@ -5,6 +5,7 @@ import type { TransactionReceipt } from "web3-types";
 
 // .js extensions are required by NodeNext module resolution (see tsconfig.json).
 import txSettings from "./txSettings.js";
+import { withUserTransaction } from "./userTransactionQueue.js";
 import { serializeBigInts } from "./utils.js";
 
 /**
@@ -882,6 +883,28 @@ async function waitForTxCompletionCheck(
  *   send and all escalations. Every submitted hash is available as `txHashes`.
  */
 export async function escalatedSendTransaction(
+  web3: Web3,
+  signer: Signer,
+  to: string,
+  data: string,
+  logger: pino.Logger,
+  gasLimit?: number,
+  maxGasLimit?: number,
+): Promise<TransactionReceipt> {
+  let key: string;
+  try {
+    const address = await signer.getAddress();
+    const chainId = await web3.eth.getChainId();
+    key = `${chainId}:${address.toLowerCase()}`;
+  } catch (error) {
+    throw new PreSubmissionError(error);
+  }
+  return withUserTransaction(key, () =>
+    sendUserTransaction(web3, signer, to, data, logger, gasLimit, maxGasLimit),
+  );
+}
+
+async function sendUserTransaction(
   web3: Web3,
   signer: Signer,
   to: string,

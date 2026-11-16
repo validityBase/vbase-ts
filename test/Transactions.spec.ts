@@ -1015,6 +1015,7 @@ describe("Transaction recovery error types", () => {
   function makeMockWeb3(gasPrice = 1000n): any {
     return {
       eth: {
+        getChainId: async () => 31337n,
         getGasPrice: async () => gasPrice,
         getTransactionReceipt: async () => null,
       },
@@ -1036,6 +1037,7 @@ describe("Transaction recovery error types", () => {
     const providerError = new Error("gas station unreachable");
     const web3 = {
       eth: {
+        getChainId: async () => 31337n,
         getGasPrice: async () => {
           throw providerError;
         },
